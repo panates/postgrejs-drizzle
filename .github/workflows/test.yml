@@ -1,0 +1,91 @@
+name: Test
+on:
+  workflow_call:
+    secrets:
+      PERSONAL_ACCESS_TOKEN:
+
+  # Can be run manually
+  workflow_dispatch:
+
+  # on git push
+  push:
+    branches:
+      - dev
+
+# This workflow only ever reads the repository: it checks out, installs and
+# runs tests. Set explicitly rather than left to the repository default,
+# which is org-wide and can be widened later without anyone editing here.
+permissions:
+  contents: read
+
+# Only one run per branch at a time
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Node v${{ matrix.node }}, drizzle-orm ${{ matrix.drizzle }}, PostgreSQL v${{ matrix.postgres }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [ '22', '24' ]
+        postgres: [ '16', '18' ]
+        # The driver's peer range is >=0.44.6 <0.46.0, so both ends of it are
+        # tested. 0.44.0 is deliberately not in the range: it shipped the
+        # breaking PgPreparedQuery constructor change, and 0.44.6 is the first
+        # release where `cache` is optional.
+        drizzle: [ '0.44.6', '0.45.2' ]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Environment
+        uses: panates/gh-setup-node@v1
+        with:
+          node-version: ${{ matrix.node }}
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
+      - name: Install the drizzle-orm version under test
+        run: npm install --no-save drizzle-orm@${{ matrix.drizzle }}
+
+      - name: Run linter test
+        run: npm run lint
+
+      - name: Run circular dependency test
+        run: npm run check
+
+      - name: Run compile test
+        run: npm run compile
+
+      - name: Run unit tests
+        run: npm run citest
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: postgres
+
+      - name: Send coverage to Coveralls
+        uses: coverallsapp/github-action@v2
+        # Run only once
+        if: ${{ matrix.node == '22' && matrix.postgres == '18' && matrix.drizzle == '0.45.2' }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
