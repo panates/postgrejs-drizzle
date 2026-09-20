@@ -1,7 +1,7 @@
 {
   "name": "drizzle-postgrejs",
   "description": "Drizzle ORM driver for PostgreJS - run a Drizzle schema on PostgreJS's wire-protocol client",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": "Panates",
   "license": "BSD-3-Clause",
   "private": true,
