@@ -1,0 +1,49 @@
+name: drizzle-orm suite
+on:
+  # Can be run manually
+  workflow_dispatch:
+
+  # Weekly, to notice a change in drizzle-orm rather than in this repository
+  schedule:
+    - cron: '0 6 * * 1'
+
+# Only one run at a time
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    name: drizzle-orm ${{ matrix.drizzle }}, PostgreSQL ${{ matrix.postgres }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of the peer range, on the PostgreSQL the suite pins and
+        # on a current one. No expected-failure count is pinned here: the
+        # script runs drizzle-orm/node-postgres against the same server in
+        # the same invocation and compares, because the suite asserts row
+        # order in three places without writing ORDER BY and so scores
+        # differently per server version.
+        drizzle: ['0.44.6', '0.45.2']
+        postgres: ['postgres:14', 'postgres:18']
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Environment
+        uses: panates/gh-setup-node@v1
+        with:
+          node-version: '22'
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
+      - name: Run drizzle-orm's own PostgreSQL suite against this driver
+        run: scripts/run-drizzle-suite.sh
+        env:
+          DRIZZLE_VERSION: ${{ matrix.drizzle }}
+          PG_IMAGE: ${{ matrix.postgres }}
+          WORK_DIR: ${{ runner.temp }}/drizzle-suite

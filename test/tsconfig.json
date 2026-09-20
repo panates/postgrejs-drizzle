@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig-base.json",
+  "include": ["../src/**/*.ts", "./**/*.ts"],
+  "compilerOptions": {
+    "types": ["node", "mocha"],
+    "noEmit": true,
+    "sourceMap": true,
+    "rootDir": "..",
+    "paths": {
+      "drizzle-postgrejs": ["../src/index.js"]
+    }
+  }
+}
