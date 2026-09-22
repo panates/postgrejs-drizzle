@@ -5,9 +5,11 @@ defaults had to be overridden and what each override costs. Everything here was 
 server rather than read out of documentation; a claim that says "verified" has a number behind it,
 and the tests under `test/` hold most of them to it.
 
-Measured against `drizzle-orm` 0.45.2 (npm `latest`) and `drizzle-orm@rc` 1.0.0-rc.4, PostgreJS
-3.6.1, and PostgreSQL 14.24 and 18.4. Line references are into the `drizzle-orm` git tree at tag
-`0.45.2`, path prefix `drizzle-orm/src/`.
+Measured against `drizzle-orm` 0.45.3 (npm `latest`) and `drizzle-orm@rc` 1.0.0-rc.4, PostgreJS
+3.10.1, and PostgreSQL 14.24 and 18.4. The recon round that opened this document ran on 0.45.2 and
+PostgreJS 3.6.1, and where a number below names those, that is the run it came from. Line references
+are into the `drizzle-orm` git tree at tag `0.45.2`, path prefix `drizzle-orm/src/` - 0.45.3 changed
+nothing under `pg-core`.
 
 It started as reconnaissance, before any code existed, and the shape of that round is still visible -
 ten questions, then an estimate and a recommendation. It has been re-measured since, whenever what it
@@ -444,10 +446,21 @@ _int8, _numeric, _date, _timestamp, _timestamptz, _time, _interval, _point
 ```
 
 `line` and `_line` joined them later, making 18, and one release early: drizzle's `line` column
-parses `{a,b,c}` out of a string and copes with nothing else, and PostgreJS is in the middle of
-giving the geometric family classes of their own (`line`, `path`, `polygon` after `point`, `circle`,
-`box` and `lseg`). Asking for text costs nothing while `line` still decodes to a string, and keeps
-the column working on the build where it stops. `src/constants.ts` is the list as it stands.
+parses `{a,b,c}` out of a string and copes with nothing else, and PostgreJS was in the middle of
+giving the geometric family classes of their own. It landed in 3.10.0, and `line` is a `Line` there -
+the pre-emptive entry is what keeps that column working. `src/constants.ts` is the list as it stands.
+
+**What PostgreJS decodes that `pg` leaves as text, and this driver leaves alone.** By 3.10.0 that is
+ranges, `money`, and `path`, `polygon`, `circle`, `box` and `lseg`. Drizzle has a column for none of
+them, so nothing it owns is misread either way and they reach a caller only through a raw
+`db.execute()` - where a decoded value is usually the more useful one. `money` is the one worth
+naming: `pg` prints `"$12.34"` and PostgreJS answers `12.34`, so the currency rendering is gone
+rather than reshaped, and a caller who wants the exact decimal wants PostgreJS's `decimalAsString`
+rather than a double. All of them are pinned by tests in `test/B-live/types.spec.ts`, so the choice
+stays a decision.
+
+**Verified on the peer floor.** All 199 tests pass on PostgreJS 3.10.1, which is what the peer range
+starts at, and drizzle's own suite scores 183 of 183 there - the same as the `node-postgres` control.
 
 `point` is the one addition and the one that is easy to miss: PostgreJS decodes it into a `Point`
 class instance, and drizzle's `point` column in `xy` mode returns the driver value **unchanged**
@@ -501,16 +514,18 @@ Tracked by blob hash of the two seam files across every released tag:
 constructor grew three parameters (`cache`, `queryMetadata`, `cacheConfig`) and `queryWithCache` appeared.
 A driver written against 0.43 does not compile against 0.44. 0.44.6 relaxed `cache: Cache` to
 `Cache | undefined`. Since then the seam has been stable: `pg-core/session.ts` is **byte-identical
-across 0.44.6, 0.45.0, 0.45.1 and 0.45.2**, and `node-postgres/session.ts`'s only change in that
-window is the pg-native `Pool` detection fix (`:252`).
+across 0.44.6, 0.45.0, 0.45.1, 0.45.2 and 0.45.3**, and `node-postgres/session.ts`'s only change in
+that window is the pg-native `Pool` detection fix (`:252`).
 
 **So the honest peer range is `>=0.44.6 <0.46.0`**, one breaking seam change in roughly six minors.
 Since verified by running drizzle's own suite at both ends through
-`scripts/run-drizzle-suite.sh`: 179 of 179 on 0.44.6 and 183 of 183 on 0.45.2, matching the
+`scripts/run-drizzle-suite.sh`: 179 of 179 on 0.44.6 and 183 of 183 on 0.45.3, matching the
 `node-postgres` control on each, with no skips.
 
-**The problem is what sits outside that range.** npm `latest` has been frozen at 0.45.2 since
-2026-03-27 while the 1.0 line ships actively - `1.0.0-rc.4` on 2026-06-27 and prereleases through
+**The problem is what sits outside that range.** npm `latest` moved for the first time in six months
+on 2026-09-21, and only to add a driver: 0.45.3's `pg-core/session.js` and `session.d.ts` are
+byte-identical to 0.45.2's, and the release adds `netlify-db`. The 0.45 line is maintained but not
+developed, while the 1.0 line ships actively - `1.0.0-rc.4` on 2026-06-27 and prereleases through
 `1.0.0-rc.5-5935859` on 2026-09-09, eleven days ago. And 1.0 is not a tidy-up:
 
 - `PgPreparedQuery` becomes `PgBasePreparedQuery` with a bare `(query)` constructor and one abstract
@@ -548,9 +563,11 @@ Enum OID discovery is no longer on this list: `unknownTypesAsString` replaced it
 to 6 days. All three are fixed, and the fixes were verified here against the suite and against the
 differential harnesses. What remains is ordinary: the `point` prototype question in §9, and D5.
 
-**Biggest risk, and it is not technical.** It is that 0.45.2 is a dead branch. Six months of no
-`latest` release against an rc line that is still moving, plus a seam rewrite that changes every
-class name a driver touches, means work done against 0.45 has to be done again. The second-biggest
+**Biggest risk, and it is not technical.** It is that the 0.45 line is maintained but not developed.
+Six months between `latest` releases, and the one that ended them - 0.45.3, 2026-09-21 - adds a
+driver and leaves `pg-core` byte-identical, against an rc line that is still moving. Add a seam
+rewrite that changes every class name a driver touches, and work done against 0.45 has to be done
+again. The second-biggest
 risk is that the 1.0 rewrite is still an **rc** - `rc.5` prereleases were landing eleven days ago -
 so a driver targeting it is aiming at a surface that can still shift before 1.0 final.
 
@@ -639,7 +656,7 @@ makes without an `ORDER BY`. The parameter problem that cost the Kysely round th
 predicted and has exactly the same answer. None of the reasons to walk away that the first round
 anticipated - internals-only seam, no oracle, unbounded scope - actually hold.
 
-What does hold is that **0.45.2 is very likely the last of its line**, and a driver for it will need
+What does hold is that **0.45 is very likely the last of its line**, and a driver for it will need
 rewriting rather than adapting. So I would not build only for 0.45.
 
 Concretely, what I would do next, in this order:

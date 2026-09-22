@@ -27,7 +27,7 @@ jobs:
         # the same invocation and compares, because the suite asserts row
         # order in three places without writing ORDER BY and so scores
         # differently per server version.
-        drizzle: ['0.44.6', '0.45.2']
+        drizzle: ['0.44.6', '0.45.3']
         postgres: ['postgres:14', 'postgres:18']
     runs-on: ubuntu-latest
     timeout-minutes: 30

@@ -18,7 +18,7 @@ It is held to drizzle's own PostgreSQL integration suite, run against this drive
 npm install drizzle-postgrejs drizzle-orm postgrejs
 ```
 
-`drizzle-orm` (>=0.44.6 <0.46.0) and `postgrejs` (>=3.6.1) are peer dependencies.
+`drizzle-orm` (>=0.44.6 <0.46.0) and `postgrejs` (>=3.10.1) are peer dependencies.
 
 ## Usage
 
@@ -144,8 +144,12 @@ Small, and all of them measured.
   is a number where `pg` gives a string, and `line` means something else on each side - `pg`'s is
   PostgreSQL's own C source line, PostgreJS's is the line of SQL. `instanceof` against `pg`'s class
   does not hold.
-- **Ranges decode.** `int4range` and the rest come back as PostgreJS's `Range`, where `pg` gives the
-  text. Drizzle has no range column, so nothing it owns reads them either way.
+- **Some types decode where `pg` hands back text.** Ranges come back as PostgreJS's `Range`, `money`
+  as a number rather than `"$12.34"`, and `path`, `polygon`, `circle`, `box` and `lseg` as their own
+  classes. Drizzle has no column for any of them, so nothing it owns reads them either way - they
+  reach you only through a raw `db.execute()`, and there the decoded value is usually the more useful
+  one. `point` and `line`, which drizzle *does* have columns for, are asked for as text and come out
+  exactly as under `pg`.
 - **`connectionString` is translated.** It is `pg`'s spelling and not one of PostgreJS's options;
   passed straight through it would be ignored and you would quietly get `localhost:5432/postgres`, so
   this driver translates it instead.

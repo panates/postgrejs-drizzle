@@ -29,8 +29,8 @@ places without an `ORDER BY`, so its score moves with the PostgreSQL version.
 
 ## Where things are
 
-- **PostgreJS**: `../postgrejs`. Its own `CLAUDE.md` describes the internals. Peer is `^3.6.1`,
-  which is published and contains everything referred to below.
+- **PostgreJS**: `../postgrejs`. Its own `CLAUDE.md` describes the internals. Peer is
+  `>=3.10.1 <4`, which is published and contains everything referred to below.
 - **The Kysely dialect**: `../postgrejs-kysely`. Read its `CLAUDE.md` before starting anything here -
   the same ground was covered once already, and its "What PostgreJS gives you" and "Settled decisions"
   sections are the cheapest way to avoid paying for the same discoveries twice. It is a finished

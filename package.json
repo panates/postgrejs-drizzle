@@ -7,7 +7,7 @@
   "private": true,
   "peerDependencies": {
     "drizzle-orm": ">=0.44.6 <0.46.0",
-    "postgrejs": ">=3.7.0 <4"
+    "postgrejs": ">=3.10.1 <4"
   },
   "devDependencies": {
     "@panates/eslint-config": "^2.1.6",
@@ -22,13 +22,13 @@
     "auto-changelog": "^2.6.0",
     "c8": "^12.0.0",
     "dpdm": "^4.2.0",
-    "drizzle-orm": "^0.45.2",
+    "drizzle-orm": "^0.45.3",
     "expect": "^30.4.1",
     "globals": "^17.7.0",
     "husky": "^9.1.7",
     "mocha": "^12.0.1",
     "pg": "^8.23.0",
-    "postgrejs": "^3.7.0",
+    "postgrejs": "^3.10.1",
     "prettier": "^3.9.4",
     "rimraf": "^6.1.3",
     "ts-cleanup": "^1.3.0",
