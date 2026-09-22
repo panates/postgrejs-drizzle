@@ -76,57 +76,37 @@ are this driver's:
 | `fetchAsString`        | `[]`             | Extra OIDs to fetch as text, on top of the ones drizzle needs        |
 | `prepare`              | PostgreJS's own  | `false` keeps statements out of PostgreJS's prepared statement cache |
 
-### Why `unknownTypesAsString` is on
+### What you get by default
 
-PostgreJS asks for binary on every column and has a decoder for the types it knows. A type it does
-not know - an enum, a composite, an extension type - would arrive as a `Buffer` nothing can read, so
-a schema with a single `pgEnum` would silently return bytes. With the option on, exactly those
-columns are asked for as text and arrive as the string PostgreSQL would have printed, which is what
-`pg` gives for the same column.
+**Every column arrives as something you can read.** `unknownTypesAsString` is on, so an enum, a
+composite, an extension type - anything PostgreJS has no decoder for - comes back as the string
+PostgreSQL printed, the same value `pg` hands you. A schema can use `pgEnum` and custom types freely.
+It buys that with one extra round trip the first time a connection sees a given statement, so turn it
+off when every type in your schema has a decoder.
 
-It is not free: result format codes are positional, so the column types have to be known before the
-Bind that asks for them, and a statement that has not been prepared yet is prepared on first sight -
-one extra round trip per distinct statement per connection. Turn it off if you know every type in
-your schema has a decoder.
+**The types drizzle maps itself keep every digit.** `int8`, `numeric`, `date`, `timestamp`,
+`timestamptz`, `time`, `interval`, `point`, `line` and their array forms are asked for in
+PostgreSQL's own text rendering, which is the exact value the server holds: a `numeric` past a
+double's reach survives, a `timestamp` is read as UTC, a `date` is the day it says, and drizzle's
+column mappers - written against these strings - get what they expect. The string is the server's
+own, so it cannot drift from what `pg` received, and no client-side renderer has to guess at the
+session's `DateStyle`, `IntervalStyle` or `TimeZone`. The list is exported as `FETCH_AS_STRING`, and
+`fetchAsString` in the config adds to it.
 
-### Why some types are fetched as text
+**PostgreSQL types each parameter, from where it lands.** Parameters go out as OID 0,
+"unspecified" - what `pg` sends - so the server resolves each one from its context: `coalesce($1, 1)`
+is a number, a parameter bound into a `json` column is json, and an overloaded function picks the
+overload you meant. That is what lets drizzle hand the driver the strings it prefers - `JSON.stringify`
+for `json` and `jsonb`, `makePgArray` for arrays, `String` for `numeric` and `bigint`, `toISOString`
+for `timestamp` and `date` - and have every one of them land as the column's own type. A `Date`, a
+`Buffer`, a JS array and a plain object keep PostgreJS's typed binary encoder, which carries them
+whole rather than through a text form the server would have to parse back.
 
-Drizzle's column mappers are written against what `pg` hands them, and `pg` asks for text and leaves
-most of these as strings. PostgreJS decodes them into richer JavaScript values, which is better in
-general and wrong here - `numeric` would arrive as a `number` that has already lost its digits,
-`timestamp` as a `Date` read in the local zone rather than UTC, `date` in string mode a day early,
-and `interval` and `time` as an `Interval` and a `Date` where drizzle's own columns do nothing to
-them and a string was meant.
+**Transactions behave the way PostgreSQL defines them.** `rollbackOnError` is off, so a failed
+statement aborts the block and the rollback is yours to drive - exactly as under `pg`, and exactly
+what drizzle's transaction API is written against.
 
-So these are asked for as text: `int8`, `numeric`, `date`, `timestamp`, `timestamptz`, `time`,
-`interval`, `point`, `line`, and their array forms. The list is exported as `FETCH_AS_STRING` if you
-want to see it; `fetchAsString` in the config adds to it rather than replacing it.
-
-Asking the server is what makes this exact rather than approximately right: the string is
-PostgreSQL's own rendering, so it cannot drift from what `pg` received. A decoder written on this
-side could not be - the text form of the date and time types is decided by the session's
-`DateStyle`, `IntervalStyle` and `TimeZone`, which the client does not track.
-
-### Why parameter types are left to the server
-
-PostgreJS derives an OID for each parameter from the value it is given, so a plain string is declared
-`varchar` and PostgreSQL stops inferring the type from where the parameter lands. That is fatal here
-rather than inconvenient, because drizzle stringifies nearly everything before the driver sees it -
-`json` and `jsonb` through `JSON.stringify`, arrays through `makePgArray`, `numeric` and `bigint`
-through `String`, `timestamp` and `date` through `toISOString`. Left alone, an ordinary insert fails
-with `column "x" is of type json but expression is of type character varying`.
-
-Strings, numbers, booleans, bigints and nulls therefore go out as `BindParam(0, value)` - OID 0,
-"unspecified", which is what `pg` sends. A `Date`, a `Buffer`, a JS array and a plain object keep
-PostgreJS's own typed binary encoder, because their JS text form is not something the server could
-parse out of context.
-
-### Why `rollbackOnError` is off
-
-PostgreJS wraps each statement inside a transaction in a savepoint of its own by default, so a failed
-statement leaves the transaction usable. That is neither PostgreSQL's own rule nor what a drizzle
-user expects, so this driver turns it off: a failed statement aborts the block, exactly as under
-`pg`.
+[`doc/DRIVER-DESIGN.md`](doc/DRIVER-DESIGN.md) has the measurements behind each of these.
 
 ## Differences from `drizzle-orm/node-postgres`
 
@@ -144,20 +124,20 @@ Small, and all of them measured.
   is a number where `pg` gives a string, and `line` means something else on each side - `pg`'s is
   PostgreSQL's own C source line, PostgreJS's is the line of SQL. `instanceof` against `pg`'s class
   does not hold.
-- **Some types decode where `pg` hands back text.** Ranges come back as PostgreJS's `Range`, `money`
-  as a number rather than `"$12.34"`, and `path`, `polygon`, `circle`, `box` and `lseg` as their own
-  classes. Drizzle has no column for any of them, so nothing it owns reads them either way - they
-  reach you only through a raw `db.execute()`, and there the decoded value is usually the more useful
-  one. `point` and `line`, which drizzle *does* have columns for, are asked for as text and come out
-  exactly as under `pg`.
-- **`connectionString` is translated.** It is `pg`'s spelling and not one of PostgreJS's options;
-  passed straight through it would be ignored and you would quietly get `localhost:5432/postgres`, so
-  this driver translates it instead.
+- **Some types arrive decoded where `pg` leaves you the text to parse.** Ranges come back as
+  PostgreJS's `Range`, `money` as a number rather than `"$12.34"`, and `path`, `polygon`, `circle`,
+  `box` and `lseg` as their own classes. Drizzle has no column for any of them, so they reach you
+  only through a raw `db.execute()` - where the decoded value is the one you would have written the
+  parser for. `point` and `line`, which drizzle *does* have columns for, are asked for as text and
+  come out exactly as under `pg`.
+- **`connectionString` is accepted.** `pg`'s spelling is translated into PostgreJS's own options, so
+  a `DATABASE_URL` and the rest of an existing `node-postgres` setup move over unchanged.
 
-Multi-statement `db.execute()` works, which needs saying because it nearly did not: `pg` takes
-several statements in one call because a parameterless query goes over the simple protocol, and
-PostgreJS's `query()` is always the extended one. The driver falls back to PostgreJS's `execute()`
-when the server says so, which is safe because it says so while parsing, before anything has run.
+Multi-statement `db.execute()` works here too, and it is worth knowing how: `pg` takes several
+statements in one call because a parameterless query goes over the simple protocol. This driver
+reaches the same place through PostgreJS's `execute()`, and switches to it on the server's own word -
+which the server gives while parsing, before any statement has run, so the retry costs nothing and
+risks nothing.
 
 ## drizzle's own test suite
 
