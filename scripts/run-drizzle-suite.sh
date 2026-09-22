@@ -23,7 +23,7 @@
 # modified.
 #
 # Usage: scripts/run-drizzle-suite.sh
-#   DRIZZLE_VERSION       npm version to test against (default: 0.45.2)
+#   DRIZZLE_VERSION       npm version to test against (default: 0.45.3)
 #   PG_CONNECTION_STRING  server to use; when unset, a postgres:14 container
 #                         is started on a free port and removed at the end
 #   WORK_DIR              where the checkout lives
@@ -31,7 +31,7 @@
 #   KEEP_CONTAINER        set to keep the container running afterwards
 set -euo pipefail
 
-DRIZZLE_VERSION="${DRIZZLE_VERSION:-0.45.2}"
+DRIZZLE_VERSION="${DRIZZLE_VERSION:-0.45.3}"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_DIR="${WORK_DIR:-${TMPDIR:-/tmp}/drizzle-postgrejs-suite}"
 SUITE_DIR="$WORK_DIR/suite"

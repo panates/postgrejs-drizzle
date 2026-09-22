@@ -35,7 +35,7 @@ jobs:
         # tested. 0.44.0 is deliberately not in the range: it shipped the
         # breaking PgPreparedQuery constructor change, and 0.44.6 is the first
         # release where `cache` is optional.
-        drizzle: [ '0.44.6', '0.45.2' ]
+        drizzle: [ '0.44.6', '0.45.3' ]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
@@ -86,6 +86,6 @@ jobs:
       - name: Send coverage to Coveralls
         uses: coverallsapp/github-action@v2
         # Run only once
-        if: ${{ matrix.node == '22' && matrix.postgres == '18' && matrix.drizzle == '0.45.2' }}
+        if: ${{ matrix.node == '22' && matrix.postgres == '18' && matrix.drizzle == '0.45.3' }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}

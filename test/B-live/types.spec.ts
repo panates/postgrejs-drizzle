@@ -288,20 +288,46 @@ describe('live: value shapes', () => {
     });
 
     /**
-     * Ranges are the one family where this driver does not follow `pg`.
-     * `pg` hands back the text; PostgreJS decodes a `Range`. Drizzle has
-     * no range column, so nothing it owns is misread either way - the
-     * value only reaches a caller through raw `db.execute()`, and there a
-     * decoded range is more useful than its text. Asserted so that the
-     * choice is a decision rather than an oversight.
+     * Where this driver deliberately does not follow `pg`. PostgreJS
+     * decodes these; `pg` hands back the text. Drizzle has no column for
+     * any of them, so nothing it owns is misread either way - they reach
+     * a caller only through a raw `db.execute()`, and there the decoded
+     * value is the more useful one. Asserted so that the choice stays a
+     * decision rather than becoming an oversight: `point` and `line`, the
+     * two of this family drizzle *does* have columns for, are asked for
+     * as text and are covered above.
      */
-    it('answers a range as PostgreJS decodes it, not as pg prints it', async () => {
-      const result = await live.db.execute<{ v: { lower?: unknown } }>(
-        sql`select int4range(1, 5) as v`,
+    const decoded: [string, string, string][] = [
+      ['int4range', `int4range(1, 5)`, '[1,5)'],
+      ['path', `'((1,2),(3,4))'::path`, '((1,2),(3,4))'],
+      ['polygon', `'((1,2),(3,4),(5,6))'::polygon`, '((1,2),(3,4),(5,6))'],
+      ['circle', `'<(1,2),3>'::circle`, '<(1,2),3>'],
+      ['lseg', `'[(1,2),(3,4)]'::lseg`, '[(1,2),(3,4)]'],
+    ];
+
+    for (const [label, expr, printed] of decoded) {
+      it(`answers a ${label} as PostgreJS decodes it, not as pg prints it`, async () => {
+        const result = await live.db.execute<{ v: unknown }>(
+          sql`select ${sql.raw(expr)} as v`,
+        );
+        const value = result.rows[0]!.v;
+        expect(typeof value).toStrictEqual('object');
+        expect(String(value)).toStrictEqual(printed);
+      });
+    }
+
+    /**
+     * `money` is the one worth naming on its own: `pg` gives `"$12.34"`
+     * and PostgreJS a number, so the currency rendering is gone rather
+     * than merely reshaped. Still no drizzle column, so still only a raw
+     * execute() - but a caller who wants the exact decimal has PostgreJS's
+     * `decimalAsString`, and one who wants pg's string has `fetchAsString`.
+     */
+    it('answers money as a number, where pg prints it with its currency', async () => {
+      const result = await live.db.execute<{ v: unknown }>(
+        sql`select '12.34'::money as v`,
       );
-      const value = result.rows[0]!.v;
-      expect(typeof value).toStrictEqual('object');
-      expect(String(value)).toStrictEqual('[1,5)');
+      expect(result.rows[0]!.v).toStrictEqual(12.34);
     });
 
     it('turns it off when asked, leaving the bytes undecoded', async () => {

@@ -76,8 +76,12 @@ a SELECT and `null` for a command that carries no count. Two additions and one d
   `dataTypeID`, plus `jsType` and `isArray`. Code reading `fields[i].name` needs changing.
 - `pg`'s other `Result` properties (`oid`, `_parsers`, `_types`, `RowCtor`) are not there.
 
-**Ranges.** `int4range` and the rest come back as PostgreJS's `Range` object rather than the text
-`pg` gives. Drizzle has no range column, so this only reaches you through a raw `db.execute()`.
+**Types drizzle has no column for.** Ranges come back as PostgreJS's `Range`, `money` as a number
+rather than `"$12.34"`, and `path`, `polygon`, `circle`, `box` and `lseg` as their own classes -
+where `pg` gives text for all of them. None of these has a drizzle column, so they reach you only
+through a raw `db.execute()`. `money` is the one to look at if you use it: a JS number is not where
+a currency amount wants to live, and PostgreJS's `decimalAsString` option will hand you the exact
+decimal instead.
 
 **`pg`-specific configuration.** Pool sizing, SSL, timeouts and the rest are PostgreJS's options now,
 not `pg`'s - the names differ. `PoolConfiguration` in PostgreJS's own documentation is the list.

@@ -29,8 +29,8 @@ places without an `ORDER BY`, so its score moves with the PostgreSQL version.
 
 ## Where things are
 
-- **PostgreJS**: `../postgrejs`. Its own `CLAUDE.md` describes the internals. Peer is `^3.6.1`,
-  which is published and contains everything referred to below.
+- **PostgreJS**: `../postgrejs`. Its own `CLAUDE.md` describes the internals. Peer is
+  `>=3.10.1 <4`, which is published and contains everything referred to below.
 - **The Kysely dialect**: `../postgrejs-kysely`. Read its `CLAUDE.md` before starting anything here -
   the same ground was covered once already, and its "What PostgreJS gives you" and "Settled decisions"
   sections are the cheapest way to avoid paying for the same discoveries twice. It is a finished
@@ -98,6 +98,17 @@ of Kysely, so they carry over - but re-check each one where Drizzle's expectatio
 
 Inherited from `../postgrejs` and `../postgrejs-kysely`; they apply here from the first commit.
 
+- **No fixups here. A gap in PostgreJS is reported, not worked around.** When something this
+  adapter needs is missing, wrong or slower in `postgrejs`, do not patch around it in this package:
+  no post-decode value rewriting, no shim, no vendored parser, no `pg`-compatibility table, no
+  monkey-patching of the client, no "temporary" branch written to suit the behaviour as it is
+  today. Stop there and write the finding up as a task file in `../postgrejs/.claude/<short-name>.md`
+  - what was asked of the client, what it answered, what it should answer, and the smallest
+  reproduction that shows the difference. That repo's own session picks it up and fixes it at the
+  source. Otherwise every adapter ends up carrying its own copy of the same correction, and the
+  client's behaviour gets defined by whichever adapter last worked around it. A workaround is
+  allowed only when the user is asked for one and says yes; it then carries a comment naming the
+  task file it waits on, so it can be removed when the fix lands.
 - **Do not sign commits or pull requests on the assistant's behalf** - no `Co-Authored-By: Claude`
   trailer, no "Generated with Claude Code" line.
 - Run `git status` before staging. Commit only the files the change is about.
