@@ -49,6 +49,7 @@
     "test": "mocha",
     "precitest": "rimraf coverage",
     "citest": "c8 mocha",
+    "bench": "node --expose-gc benchmark/drizzle-bench.mjs --repeats=9",
     "qc": "npm run lint && npm run check",
     "version": "auto-changelog -p && git add CHANGELOG.md",
     "prepare": "husky || true"
