@@ -4,13 +4,8 @@ A [Drizzle ORM](https://orm.drizzle.team) driver for
 [PostgreJS](https://github.com/panates/postgrejs) - run a Drizzle schema on PostgreJS's
 wire-protocol client instead of `pg`.
 
-Drizzle is the ORM where the driver is the user's to pick: `drizzle(client)` names the PostgreSQL
-client, and everything above it - the query builder, the relational queries, the schema, the
-migrations - is the same either way.
-
-It is held to drizzle's own PostgreSQL integration suite, run against this driver and against
-`drizzle-orm/node-postgres` on the same server in the same invocation. See
-[drizzle's own test suite](#drizzles-own-test-suite).
+Everything above the driver is unchanged: the query builder, relational queries, schema and
+migrations are drizzle's, and the same code runs either way. What changes is underneath.
 
 ## Install
 
@@ -76,57 +71,67 @@ are this driver's:
 | `fetchAsString`        | `[]`             | Extra OIDs to fetch as text, on top of the ones drizzle needs        |
 | `prepare`              | PostgreJS's own  | `false` keeps statements out of PostgreJS's prepared statement cache |
 
-### Why `unknownTypesAsString` is on
+The defaults are set so that every column reaches drizzle in the shape its own column mappers were
+written for, and so that PostgreSQL types each parameter from where it lands rather than from the
+JavaScript value's own shape. [`doc/DRIVER-DESIGN.md`](doc/DRIVER-DESIGN.md) takes each one in turn,
+with the measurement behind it.
 
-PostgreJS asks for binary on every column and has a decoder for the types it knows. A type it does
-not know - an enum, a composite, an extension type - would arrive as a `Buffer` nothing can read, so
-a schema with a single `pgEnum` would silently return bytes. With the option on, exactly those
-columns are asked for as text and arrive as the string PostgreSQL would have printed, which is what
-`pg` gives for the same column.
+## What you get
 
-It is not free: result format codes are positional, so the column types have to be known before the
-Bind that asks for them, and a statement that has not been prepared yet is prepared on first sight -
-one extra round trip per distinct statement per connection. Turn it off if you know every type in
-your schema has a decoder.
+**Large columns arrive about twice as fast, on a fraction of the memory.** PostgreJS reads results in
+PostgreSQL's binary format where `pg` reads them as text. Measured through drizzle, on the same
+server, alternating between the two drivers in one run:
 
-### Why some types are fetched as text
+| Scenario                            | node-postgres | this driver | Peak heap             |
+| ----------------------------------- | ------------- | ----------- | --------------------- |
+| `int4[]` of 100k, one array column  | 26.4 ms       | **12.5 ms** | 73.4 MB -> **6.0 MB** |
+| `bytea` of 4MB, one binary column   | 89.9 ms       | **31.5 ms** | 0.6 MB -> 0.4 MB      |
 
-Drizzle's column mappers are written against what `pg` hands them, and `pg` asks for text and leaves
-most of these as strings. PostgreJS decodes them into richer JavaScript values, which is better in
-general and wrong here - `numeric` would arrive as a `number` that has already lost its digits,
-`timestamp` as a `Date` read in the local zone rather than UTC, `date` in string mode a day early,
-and `interval` and `time` as an `Interval` and a `Date` where drizzle's own columns do nothing to
-them and a string was meant.
+**Half the bytes on the wire for binary columns.** `pg` reads a `bytea` as `\x`-prefixed hex, two
+characters per byte, so a 4MB column costs 8MB of network. Here it costs 4MB. On metered egress that
+is the same saving again, on every row that carries one.
 
-So these are asked for as text: `int8`, `numeric`, `date`, `timestamp`, `timestamptz`, `time`,
-`interval`, `point`, `line`, and their array forms. The list is exported as `FETCH_AS_STRING` if you
-want to see it; `fetchAsString` in the config adds to it rather than replacing it.
+**Ordinary queries cost you nothing.** A point read, a page of two hundred mixed-type rows, an insert
+with parameters, twenty reads at once over a pool - on each of those the two drivers land inside one
+another's run-to-run spread, and which one leads changes between runs.
+[`doc/BENCHMARKS.md`](doc/BENCHMARKS.md) has the method, the spreads and the script that produced
+them.
 
-Asking the server is what makes this exact rather than approximately right: the string is
-PostgreSQL's own rendering, so it cannot drift from what `pg` received. A decoder written on this
-side could not be - the text form of the date and time types is decided by the session's
-`DateStyle`, `IntervalStyle` and `TimeZone`, which the client does not track.
+**Your statements are prepared and reused without being asked for.** PostgreJS keeps a cache of named
+statements per connection (64 by default, least-recently-used closed), so the SQL drizzle sends is
+parsed once and executed by name after that. Run three queries and the connection holds one prepared
+statement; the same three through `drizzle-orm/node-postgres` leave none, because `pg` prepares only
+a query it was given a name for and drizzle does not give it one. Drizzle's own `.prepare(name)`
+still works as it always did - it is no longer the only way to get a statement prepared.
 
-### Why parameter types are left to the server
+**A client that can do what drizzle has no way to ask for.** All of it on the pool you passed in, or
+on `db.$client`, over the same connections your queries use:
 
-PostgreJS derives an OID for each parameter from the value it is given, so a plain string is declared
-`varchar` and PostgreSQL stops inferring the type from where the parameter lands. That is fatal here
-rather than inconvenient, because drizzle stringifies nearly everything before the driver sees it -
-`json` and `jsonb` through `JSON.stringify`, arrays through `makePgArray`, `numeric` and `bigint`
-through `String`, `timestamp` and `date` through `toISOString`. Left alone, an ordinary insert fails
-with `column "x" is of type json but expression is of type character varying`.
+- **cursors and streaming** through real portals, and `COPY` in and out - including PostgreSQL's
+  binary `COPY` format, which needs a binary encoder per type that `pg` has no equivalent for;
+- **`LISTEN`/`NOTIFY`**, large objects, and logical replication;
+- **pipelining**, which closes a batch of statements with one round trip.
 
-Strings, numbers, booleans, bigints and nulls therefore go out as `BindParam(0, value)` - OID 0,
-"unspecified", which is what `pg` sends. A `Date`, a `Buffer`, a JS array and a plain object keep
-PostgreJS's own typed binary encoder, because their JS text form is not something the server could
-parse out of context.
+**Types that arrive as types.** A range comes back as a `Range`, and `path`, `polygon`, `circle`,
+`box` and `lseg` as their own classes, where `pg` leaves you the text and the parser to write.
+Drizzle has no column for any of these, so they reach you through a raw `db.execute()` - and through
+`db.$client`, where PostgreJS's own options are open to you: `Temporal` values that keep the
+microseconds a `Date` cannot hold, and exact decimal strings for `numeric` and `money` built while
+decoding rather than re-parsed afterwards.
 
-### Why `rollbackOnError` is off
+**More to go on when something goes wrong.** `db.execute()` results carry the server's whole command
+tag, so a `CREATE INDEX` says so rather than `CREATE`. A `DatabaseError` carries the line of SQL the
+server objected to and its position as a number. A pooled connection that dies arrives as a
+`ConnectionLostError` - SQLSTATE `08006`, carrying the backend's process id and the socket error as
+its `cause`.
 
-PostgreJS wraps each statement inside a transaction in a savepoint of its own by default, so a failed
-statement leaves the transaction usable. That is neither PostgreSQL's own rule nor what a drizzle
-user expects, so this driver turns it off: a failed statement aborts the block, exactly as under
-`pg`.
+**Held to drizzle's own suite.** `integration-tests/tests/pg/pg-common.ts` from the drizzle-orm
+repository runs here with nothing skipped, against this driver and against
+`drizzle-orm/node-postgres` on the same server in the same invocation - 183 of 183 on each. See
+[drizzle's own test suite](#drizzles-own-test-suite).
+
+**Nothing to change to try it.** The same four `drizzle()` forms, the same `DATABASE_URL`, the same
+schema and queries. The list below is everything that is not identical.
 
 ## Differences from `drizzle-orm/node-postgres`
 
@@ -144,20 +149,20 @@ Small, and all of them measured.
   is a number where `pg` gives a string, and `line` means something else on each side - `pg`'s is
   PostgreSQL's own C source line, PostgreJS's is the line of SQL. `instanceof` against `pg`'s class
   does not hold.
-- **Some types decode where `pg` hands back text.** Ranges come back as PostgreJS's `Range`, `money`
-  as a number rather than `"$12.34"`, and `path`, `polygon`, `circle`, `box` and `lseg` as their own
-  classes. Drizzle has no column for any of them, so nothing it owns reads them either way - they
-  reach you only through a raw `db.execute()`, and there the decoded value is usually the more useful
-  one. `point` and `line`, which drizzle *does* have columns for, are asked for as text and come out
-  exactly as under `pg`.
-- **`connectionString` is translated.** It is `pg`'s spelling and not one of PostgreJS's options;
-  passed straight through it would be ignored and you would quietly get `localhost:5432/postgres`, so
-  this driver translates it instead.
+- **Some types arrive decoded where `pg` leaves you the text to parse.** Ranges come back as
+  PostgreJS's `Range`, `money` as a number rather than `"$12.34"`, and `path`, `polygon`, `circle`,
+  `box` and `lseg` as their own classes. Drizzle has no column for any of them, so they reach you
+  only through a raw `db.execute()` - where the decoded value is the one you would have written the
+  parser for. `point` and `line`, which drizzle *does* have columns for, are asked for as text and
+  come out exactly as under `pg`.
+- **`connectionString` is accepted.** `pg`'s spelling is translated into PostgreJS's own options, so
+  a `DATABASE_URL` and the rest of an existing `node-postgres` setup move over unchanged.
 
-Multi-statement `db.execute()` works, which needs saying because it nearly did not: `pg` takes
-several statements in one call because a parameterless query goes over the simple protocol, and
-PostgreJS's `query()` is always the extended one. The driver falls back to PostgreJS's `execute()`
-when the server says so, which is safe because it says so while parsing, before anything has run.
+Multi-statement `db.execute()` works here too, and it is worth knowing how: `pg` takes several
+statements in one call because a parameterless query goes over the simple protocol. This driver
+reaches the same place through PostgreJS's `execute()`, and switches to it on the server's own word -
+which the server gives while parsing, before any statement has run, so the retry costs nothing and
+risks nothing.
 
 ## drizzle's own test suite
 

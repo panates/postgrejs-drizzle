@@ -1,7 +1,7 @@
 {
   "name": "drizzle-postgrejs",
   "description": "Drizzle ORM driver for PostgreJS - run a Drizzle schema on PostgreJS's wire-protocol client",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "Panates",
   "license": "BSD-3-Clause",
   "private": true,
@@ -49,6 +49,7 @@
     "test": "mocha",
     "precitest": "rimraf coverage",
     "citest": "c8 mocha",
+    "bench": "node --expose-gc benchmark/drizzle-bench.mjs --repeats=9",
     "qc": "npm run lint && npm run check",
     "version": "auto-changelog -p && git add CHANGELOG.md",
     "prepare": "husky || true"
