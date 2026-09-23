@@ -1,6 +1,7 @@
 export * from './config.js';
 export * from './constants.js';
 export * from './driver.js';
+export * from './migrator.js';
 export * from './params.js';
 export * from './prepared-query.js';
 export * from './result.js';

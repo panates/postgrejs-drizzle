@@ -18,6 +18,7 @@ describe('package exports', () => {
       'PgjsTransaction',
       'bindParam',
       'drizzle',
+      'migrate',
       'toQueryResult',
       'toQueryResults',
     ]);
