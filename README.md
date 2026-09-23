@@ -123,8 +123,8 @@ each row can bear are in [How the numbers were measured](#how-the-numbers-were-m
 **The gain follows the payload, not the query.** An ordinary read or write gains a little and gains
 it consistently; a column that carries bulk - an array, a `bytea`, anything large in a raw
 `db.execute()` - gains twice over, in time and in memory. A schema of text, integers and timestamps
-will see the top of that table and not the bottom. [Where the speed comes
-from](#where-the-speed-comes-from) explains which part of the client earns each row.
+will see the top of that table and not the bottom. The four sections after the method explain which
+part of the client earns each row.
 
 ## How the numbers were measured
 
@@ -154,11 +154,7 @@ rows say "not distinguishable" and are printed that way rather than rounded into
 Run it yourself with `npm run bench`; [`doc/BENCHMARKS.md`](doc/BENCHMARKS.md) has the peak-heap
 figures and the rest of the method.
 
-## Where the speed comes from
-
-Each of these is a property of how the client talks to PostgreSQL, measured on its own.
-
-### It reads the wire format rather than a rendering of it
+## It reads the wire format rather than a rendering of it
 
 Result columns arrive in PostgreSQL's binary format and are decoded per type, where `pg` asks for
 text and parses it. On bulk that is the whole difference: a 100k-element `int4[]` costs 13.2 ms and
@@ -168,7 +164,7 @@ literal as one string before it can parse it.
 It is also cheaper on the wire. A `bytea` in text is `\x`-prefixed hex, two characters per byte, so
 the 4MB column costs 8MB of network under `pg` and 4MB here.
 
-### It keeps prepared statements
+## It keeps prepared statements
 
 PostgreJS names and caches a statement per connection - 64 by default, least-recently-used closed -
 so each distinct SQL string is parsed and planned once rather than on every call. Counted from the
@@ -179,7 +175,7 @@ name for and drizzle does not give it one. This is what the point read's 75 pair
 Drizzle's own `.prepare(name)` still works as it always did - it is no longer the only way to get a
 statement prepared.
 
-### It asks the server rather than re-rendering
+## It asks the server rather than re-rendering
 
 Where drizzle's column mappers want PostgreSQL's own text - `numeric`, the date and time family, and
 their array forms - PostgreJS asks the *server* for text, as a Bind format code, rather than decoding
@@ -187,7 +183,7 @@ the value and printing it again. So the string is PostgreSQL's own and cannot dr
 received, and nothing on this side has to track the session's `DateStyle`, `IntervalStyle` or
 `TimeZone` to produce it.
 
-### What it does not use yet
+## What it does not use yet
 
 PostgreJS can put several statements on one connection at a time. This driver does not ask it to -
 every query gets a connection to itself, exactly as under `pg` - and the concurrency row above is
