@@ -123,8 +123,7 @@ each row can bear are in [How the numbers were measured](#how-the-numbers-were-m
 **The gain follows the payload, not the query.** An ordinary read or write gains a little and gains
 it consistently; a column that carries bulk - an array, a `bytea`, anything large in a raw
 `db.execute()` - gains twice over, in time and in memory. A schema of text, integers and timestamps
-will see the top of that table and not the bottom. The four sections after the method explain which
-part of the client earns each row.
+will see the top of that table and not the bottom. What earns each row is under the method below.
 
 ## How the numbers were measured
 
@@ -151,11 +150,6 @@ the last column is the probability of seeing a split that lopsided from a fair c
 differences are real; it says nothing about their size, which is what the speedup column is for. Two
 rows say "not distinguishable" and are printed that way rather than rounded into a win.
 
-Run it yourself with `npm run bench`; [`doc/BENCHMARKS.md`](doc/BENCHMARKS.md) has the peak-heap
-figures and the rest of the method.
-
-## It reads the wire format rather than a rendering of it
-
 Result columns arrive in PostgreSQL's binary format and are decoded per type, where `pg` asks for
 text and parses it. On bulk that is the whole difference: a 100k-element `int4[]` costs 13.2 ms and
 1.7 MB of heap here against 28.5 ms and 65.2 MB, because the text path has to materialise the array
@@ -163,8 +157,6 @@ literal as one string before it can parse it.
 
 It is also cheaper on the wire. A `bytea` in text is `\x`-prefixed hex, two characters per byte, so
 the 4MB column costs 8MB of network under `pg` and 4MB here.
-
-## It keeps prepared statements
 
 PostgreJS names and caches a statement per connection - 64 by default, least-recently-used closed -
 so each distinct SQL string is parsed and planned once rather than on every call. Counted from the
@@ -175,19 +167,18 @@ name for and drizzle does not give it one. This is what the point read's 75 pair
 Drizzle's own `.prepare(name)` still works as it always did - it is no longer the only way to get a
 statement prepared.
 
-## It asks the server rather than re-rendering
-
 Where drizzle's column mappers want PostgreSQL's own text - `numeric`, the date and time family, and
 their array forms - PostgreJS asks the *server* for text, as a Bind format code, rather than decoding
 the value and printing it again. So the string is PostgreSQL's own and cannot drift from what `pg`
 received, and nothing on this side has to track the session's `DateStyle`, `IntervalStyle` or
 `TimeZone` to produce it.
 
-## What it does not use yet
-
 PostgreJS can put several statements on one connection at a time. This driver does not ask it to -
 every query gets a connection to itself, exactly as under `pg` - and the concurrency row above is
 level because of that, not despite it. The headroom is real and unclaimed.
+
+Run it yourself with `npm run bench`; [`doc/BENCHMARKS.md`](doc/BENCHMARKS.md) has the peak-heap
+figures and the rest of the method.
 
 ## drizzle's own test suite
 
