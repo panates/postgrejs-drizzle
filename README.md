@@ -1,5 +1,10 @@
 # drizzle-postgrejs
 
+[![NPM Version][npm-image]][npm-url]
+[![NPM Downloads][downloads-image]][downloads-url]
+[![CI Tests][ci-test-image]][ci-test-url]
+[![Test Coverage][coveralls-image]][coveralls-url]
+
 A [Drizzle ORM](https://orm.drizzle.team) driver for
 [PostgreJS](https://github.com/panates/postgrejs). Put it where `drizzle-orm/node-postgres` goes and
 everything above it stays the same - your schema, your queries, your migrations. Large columns come
@@ -314,3 +319,12 @@ adaptation. [`doc/DRIVER-DESIGN.md`](doc/DRIVER-DESIGN.md) §10 has the detail.
 ## License
 
 BSD-3-Clause
+
+[npm-image]: https://img.shields.io/npm/v/drizzle-postgrejs
+[npm-url]: https://npmjs.org/package/drizzle-postgrejs
+[downloads-image]: https://img.shields.io/npm/dm/drizzle-postgrejs.svg
+[downloads-url]: https://npmjs.org/package/drizzle-postgrejs
+[ci-test-image]: https://github.com/panates/postgrejs-drizzle/actions/workflows/test.yml/badge.svg
+[ci-test-url]: https://github.com/panates/postgrejs-drizzle/actions/workflows/test.yml
+[coveralls-image]: https://img.shields.io/coveralls/panates/postgrejs-drizzle/dev.svg
+[coveralls-url]: https://coveralls.io/r/panates/postgrejs-drizzle
