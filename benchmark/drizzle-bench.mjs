@@ -23,7 +23,7 @@ const arg = (name, fallback) => {
   return hit ? hit.slice(name.length + 3) : fallback;
 };
 
-const REPEATS = Number(arg('repeats', 5));
+const PAIRS = Number(arg('pairs', 0)); // 0: each scenario's own
 const ONLY = arg('scenario', 'all');
 const SCHEMA = 'bench_drizzle';
 const SEED_ROWS = 5000;
@@ -62,7 +62,8 @@ const SCENARIOS = [
   {
     name: 'point read',
     note: 'one row by primary key',
-    iters: 300,
+    iters: 50,
+    pairs: 101,
     run: (db, i) =>
       db.execute(
         sql`select * from ${sql.raw(SCHEMA)}.rows where id = ${(i % SEED_ROWS) + 1}`,
@@ -71,7 +72,8 @@ const SCENARIOS = [
   {
     name: 'page of 200',
     note: 'nine columns, mixed types',
-    iters: 60,
+    iters: 20,
+    pairs: 101,
     run: (db, i) =>
       db.execute(
         sql`select * from ${sql.raw(SCHEMA)}.rows order by id offset ${(i % 10) * 200} limit 200`,
@@ -80,7 +82,8 @@ const SCENARIOS = [
   {
     name: 'insert returning',
     note: 'six parameters',
-    iters: 200,
+    iters: 50,
+    pairs: 101,
     run: (db, i) =>
       db.execute(
         sql`insert into ${sql.raw(SCHEMA)}.rows (name, email, age, balance, tags, meta)
@@ -92,7 +95,8 @@ const SCENARIOS = [
   {
     name: 'concurrent reads',
     note: '20 point reads at once, pool of 10',
-    iters: 20,
+    iters: 4,
+    pairs: 61,
     pooled: true,
     run: (db, i) =>
       Promise.all(
@@ -106,14 +110,16 @@ const SCENARIOS = [
   {
     name: 'int4[] of 100k',
     note: 'one array column',
-    iters: 8,
+    iters: 3,
+    pairs: 41,
     run: db =>
       db.execute(sql`select array(select generate_series(1, 100000)) as v`),
   },
   {
     name: 'bytea of 4MB',
     note: 'one binary column',
-    iters: 8,
+    iters: 3,
+    pairs: 41,
     run: db => db.execute(sql`select repeat('x', 4194304)::bytea as v`),
   },
 ];
@@ -153,6 +159,32 @@ const median = xs => {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 };
 
+/**
+ * Two-sided probability of a split at least this lopsided from a fair
+ * coin. Only which driver won each pair counts, and by how much is thrown
+ * away - which is exactly what lets it survive a machine whose absolute
+ * numbers drift between runs.
+ */
+function signTest(wins, n) {
+  const logFactorial = [0];
+  for (let i = 1; i <= n; i++)
+    logFactorial[i] = logFactorial[i - 1] + Math.log(i);
+  const logChoose = k =>
+    logFactorial[n] - logFactorial[k] - logFactorial[n - k];
+  const extreme = Math.min(wins, n - wins);
+  let tail = 0;
+  for (let k = 0; k <= extreme; k++)
+    tail += Math.exp(logChoose(k) - n * Math.LN2);
+  return Math.min(1, 2 * tail);
+}
+
+/** '< 1 in 10^12', or 'even' when the split says nothing. */
+function odds(p) {
+  if (p >= 0.05) return 'not distinguishable';
+  const exponent = Math.floor(-Math.log10(p));
+  return exponent >= 3 ? `< 1 in 10^${exponent}` : `p = ${p.toFixed(3)}`;
+}
+
 async function main() {
   const pgPool = new PgPool({ ...CONN, max: 1 });
   const jsPool = new PgjsPool({ ...CONN, pool: { max: 1 } });
@@ -179,22 +211,32 @@ async function main() {
   const results = [];
 
   for (const scenario of scenarios) {
+    const pairs = PAIRS || scenario.pairs;
     for (const name of names) {
-      for (let i = 0; i < Math.min(scenario.iters, 30); i++)
+      for (let i = 0; i < Math.min(scenario.iters * 4, 60); i++)
         await scenario.run(dbFor(scenario, name), i);
     }
     const samples = { [names[0]]: [], [names[1]]: [] };
     const heaps = { [names[0]]: [], [names[1]]: [] };
-    for (let rep = 0; rep < REPEATS; rep++) {
-      // swap the order every repeat, so neither driver always runs first
-      const order = rep % 2 ? [names[1], names[0]] : names;
+    let wins = 0;
+    for (let pair = 0; pair < pairs; pair++) {
+      // swap the order every pair, so neither driver always runs first
+      const order = pair % 2 ? [names[1], names[0]] : names;
+      const timed = {};
       for (const name of order)
-        samples[name].push(await timedBatch(scenario, dbFor(scenario, name)));
-      for (const name of order)
-        heaps[name].push(await heapBatch(scenario, dbFor(scenario, name)));
+        timed[name] = await timedBatch(scenario, dbFor(scenario, name));
+      for (const name of names) samples[name].push(timed[name]);
+      if (timed[names[1]] < timed[names[0]]) wins++;
+      // heap on its own pass, and only a few times - it is the slower one
+      if (pair % Math.ceil(pairs / 5) === 0)
+        for (const name of order)
+          heaps[name].push(await heapBatch(scenario, dbFor(scenario, name)));
     }
     results.push({
       scenario,
+      pairs,
+      wins,
+      p: signTest(wins, pairs),
       rows: names.map(name => ({
         name,
         ms: median(samples[name]),
@@ -212,14 +254,14 @@ async function main() {
   await jsPoolN.close(true);
 
   console.log(
-    `\nmedian of ${REPEATS} repeats, drivers alternated, order swapped each repeat`,
+    `\nmedian per call, drivers alternated within every pair, order swapped each pair`,
   );
   console.log(
     `node ${process.version}, postgrejs ${(await import('postgrejs/package.json', { with: { type: 'json' } })).default.version}, pg ${(await import('pg/package.json', { with: { type: 'json' } })).default.version}\n`,
   );
-  for (const { scenario, rows } of results) {
+  for (const { scenario, rows, pairs, wins, p } of results) {
     console.log(
-      `${scenario.name} - ${scenario.note} (${scenario.iters} calls per batch)`,
+      `${scenario.name} - ${scenario.note} (${scenario.iters} calls per timed unit, ${pairs} pairs)`,
     );
     const slowest = Math.max(...rows.map(r => r.ms));
     for (const r of rows)
@@ -229,11 +271,7 @@ async function main() {
           `spread ${r.lo.toFixed(3)}-${r.hi.toFixed(3)}  ` +
           `peak heap ${r.peakKb.toFixed(0).padStart(7)} KB`,
       );
-    // a gap smaller than the wider driver's own run-to-run spread is not a
-    // result; say so here rather than let a reader read one off the medians
-    const spread = Math.max(...rows.map(r => r.hi - r.lo));
-    if (Math.abs(rows[0].ms - rows[1].ms) < spread)
-      console.log("  -> level: the gap is inside one driver's own spread");
+    console.log(`  -> this driver won ${wins} of ${pairs} pairs, ${odds(p)}`);
     console.log();
   }
 }
