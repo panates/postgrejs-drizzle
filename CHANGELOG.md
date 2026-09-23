@@ -1,6 +1,12 @@
 ## Changelog
 
-### [v1.0.3](https://github.com/panates/postgrejs-drizzle/compare/v1.0.2...v1.0.3) - 
+### [v1.0.4](https://github.com/panates/postgrejs-drizzle/compare/v1.0.3...v1.0.4) - 
+
+#### 📖 Documentation Changes
+
+- docs: update contributors list in package.json @Eray Hanoğlu 
+
+### [v1.0.3](https://github.com/panates/postgrejs-drizzle/compare/v1.0.2...v1.0.3) -  23 September 2026 
 
 #### 📖 Documentation Changes
 
