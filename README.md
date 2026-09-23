@@ -1,11 +1,10 @@
 # drizzle-postgrejs
 
 A [Drizzle ORM](https://orm.drizzle.team) driver for
-[PostgreJS](https://github.com/panates/postgrejs) - run a Drizzle schema on PostgreJS's
-wire-protocol client instead of `pg`.
-
-Everything above the driver is unchanged: the query builder, relational queries, schema and
-migrations are drizzle's, and the same code runs either way. What changes is underneath.
+[PostgreJS](https://github.com/panates/postgrejs). Put it where `drizzle-orm/node-postgres` goes and
+everything above it stays the same - your schema, your queries, your migrations. Large columns come
+back two to three times faster on a fraction of the heap, and the client underneath can do things
+drizzle has no way to ask for.
 
 ## Install
 
@@ -13,9 +12,10 @@ migrations are drizzle's, and the same code runs either way. What changes is und
 npm install drizzle-postgrejs drizzle-orm postgrejs
 ```
 
-`drizzle-orm` (>=0.44.6 <0.46.0) and `postgrejs` (>=3.10.1 <4) are peer dependencies. Node >=22.
+`drizzle-orm` (>=0.44.6 <0.46.0) and `postgrejs` (>=3.10.1 <4) are peer dependencies. Node >=22,
+PostgreSQL 14 or later - 14 and 18 are what CI runs.
 
-## Usage
+## Quick start
 
 ```ts
 import { drizzle } from 'drizzle-postgrejs';
@@ -25,17 +25,25 @@ const db = drizzle('postgres://localhost:5432/mydb');
 await db.select().from(users).where(eq(users.name, 'ada'));
 ```
 
+That is the whole change.
+
+## Usage
+
+### Connecting
+
 Four ways to say where the database is, the same four `drizzle-orm/node-postgres` takes:
 
 ```ts
-drizzle('postgres://localhost:5432/mydb');            // a connection string
-drizzle({ connection: 'postgres://…' });              // the same, named
-drizzle({ connection: { host, port, database } });    // PostgreJS's own options
-drizzle(pool);                                        // a Pool you made yourself
+drizzle('postgres://localhost:5432/mydb'); // a connection string
+drizzle({ connection: 'postgres://…' }); // the same, named
+drizzle({ connection: { host, port, database } }); // PostgreJS's own options
+drizzle(pool); // a Pool you made yourself
 ```
 
 A pool this package opened is on `db.$client`, and closing it is `await db.$client.close()`. A
 `Connection` works in place of a `Pool` when one connection is what you want.
+
+### Queries
 
 Relational queries need the schema, as usual:
 
@@ -180,70 +188,91 @@ level because of that, not despite it. The headroom is real and unclaimed.
 Run it yourself with `npm run bench`; [`doc/BENCHMARKS.md`](doc/BENCHMARKS.md) has the peak-heap
 figures and the rest of the method.
 
-## drizzle's own test suite
+## Tested against drizzle's own suite
 
 `integration-tests/tests/pg/pg-common.ts` in the drizzle-orm repository is a shared suite every
 driver drizzle ships points at itself, declaring what it cannot pass through `skipTests()`.
 `scripts/run-drizzle-suite.sh` runs it here with no skips at all, twice - once on this driver and
-once on `drizzle-orm/node-postgres` - and fails only on a test this driver loses that the control
-wins:
-
-```sh
-scripts/run-drizzle-suite.sh
-```
+once on `drizzle-orm/node-postgres` over the same server in the same invocation, as the control:
 
 ```
   node-postgres (control)  183 / 183
   drizzle-postgrejs        183 / 183
 ```
 
-The control run is the point. The suite asserts row order in three places without writing an
+Same tests, and both pass every one of them: **not a single test that this driver loses and
+`node-postgres` wins.** There is no expected-failure list either - the control run measures the
+baseline on your machine, so that is the only thing the comparison can fail on. It has to be a
+control rather than a number: the suite asserts row order in three places without writing an
 `ORDER BY`, so its score moves with the PostgreSQL version - 183 of 183 on the 14 its own
-`createDockerDB()` pins, 180 of 183 on 18, for both drivers alike. A fixed expected-failure count
-would be wrong on one of them.
+`createDockerDB()` pins, 180 of 183 on 18, for both drivers alike.
 
 On drizzle-orm 0.44.6, the other end of the peer range, the suite is 179 tests and both score 179.
 
-It needs a server; without `PG_CONNECTION_STRING` it starts a `postgres:14` container on a free port
-and removes it afterwards. A weekly CI job runs the matrix of both drizzle versions against
-PostgreSQL 14 and 18.
+Run it yourself with `scripts/run-drizzle-suite.sh`. It needs a server; without
+`PG_CONNECTION_STRING` it starts a `postgres:14` container on a free port and removes it afterwards.
+A weekly CI job runs the matrix of both drizzle versions against PostgreSQL 14 and 18.
 
-## Differences from `drizzle-orm/node-postgres`
+On top of that, 203 tests of this package's own - and a differential suite among them that runs every
+case through `drizzle-orm/node-postgres` as well and compares the two.
 
-Small, and all of them measured.
-[`doc/MIGRATING-FROM-NODE-POSTGRES.md`](doc/MIGRATING-FROM-NODE-POSTGRES.md) is the checklist;
-[`doc/DRIVER-DESIGN.md`](doc/DRIVER-DESIGN.md) has the numbers behind it.
+## What changes when you switch
 
-- **`db.execute()` results carry a `commandTag`.** `pg` keeps the first word of the server's command
-  tag, so four kinds of `CREATE` and four kinds of `DROP` are one word each. `command` matches `pg`
-  for compatibility; `commandTag` is the whole tag - `CREATE INDEX` rather than `CREATE`.
-- **`fields` is PostgreJS's**, with `fieldName` and `dataTypeId` rather than `pg`'s `name` and
-  `dataTypeID`, plus the JS type and whether the column is an array.
-- **Errors are PostgreJS's `DatabaseError`.** Every structured field you would branch on is the
-  same: `code`, `severity`, `detail`, `hint`, `schema`, `table`, `column`, `constraint`. `position`
-  is a number where `pg` gives a string, and `line` means something else on each side - `pg`'s is
-  PostgreSQL's own C source line, PostgreJS's is the line of SQL. `instanceof` against `pg`'s class
-  does not hold.
-- **Some types arrive decoded where `pg` leaves you the text to parse.** Ranges come back as
-  PostgreJS's `Range`, `money` as a number rather than `"$12.34"`, and `path`, `polygon`, `circle`,
-  `box` and `lseg` as their own classes. Drizzle has no column for any of them, so they reach you
-  only through a raw `db.execute()` - where the decoded value is the one you would have written the
-  parser for. `point` and `line`, which drizzle *does* have columns for, are asked for as text and
-  come out exactly as under `pg`.
-- **`connectionString` is accepted.** `pg`'s spelling is translated into PostgreJS's own options, so
-  a `DATABASE_URL` and the rest of an existing `node-postgres` setup move over unchanged.
+Measured against `drizzle-orm/node-postgres` on the same schema and the same server.
+[`doc/MIGRATING-FROM-NODE-POSTGRES.md`](doc/MIGRATING-FROM-NODE-POSTGRES.md) is the checklist.
 
-Multi-statement `db.execute()` works here too, and it is worth knowing how: `pg` takes several
-statements in one call because a parameterless query goes over the simple protocol. This driver
-reaches the same place through PostgreJS's `execute()`, and switches to it on the server's own word -
-which the server gives while parsing, before any statement has run, so the retry costs nothing and
-risks nothing.
+### Values
 
-## Requirements
+Drizzle has a column for none of these, so they reach you only through a raw `db.execute()`.
 
-- Node >=22
-- `drizzle-orm` >=0.44.6 <0.46.0 and `postgrejs` >=3.10.1 <4, both peer dependencies
-- PostgreSQL: run against 14 and 18 in CI, on both ends of the drizzle range
+| case                                  | `node-postgres`         | `drizzle-postgrejs`      |
+| ------------------------------------- | ----------------------- | ------------------------ |
+| `money`                               | `"$12.34"`              | `12.34`                  |
+| `int4range` and the rest of the family | `"[1,5)"`              | a `Range`                |
+| `path`, `polygon`, `box`, `lseg`      | the text literal        | their own classes        |
+| `circle`                              | `{ x, y, radius }`      | a `Circle` - same fields |
+| `point`                               | `{ x, y }`              | the text `"(1,2)"`       |
+| `line`                                | `"{1,2,3}"`             | the same                 |
+
+`point` is the one that runs the other way, and on purpose: drizzle's own `point` column hands the
+driver's value back untouched, so a class instance would reach the caller where `pg` gives a plain
+object. It is asked for as text instead and drizzle parses it - which is why **through drizzle's
+columns both drivers answer `[1, 2]` and `[1, 2, 3]`**, identically, and the difference above exists
+only in a raw execute.
+
+Everywhere else the two agree, and `test/C-differential` is what says so: the same drizzle calls
+through both drivers, deep-compared. The table itself is a test - `test/C-differential/values.spec.ts`
+runs every row through `pg` as well, which is how the `circle` row got corrected.
+
+### Results
+
+`db.execute()` results carry a `commandTag` as well as `command`. `pg` keeps only the first word of
+the server's command tag, so four kinds of `CREATE` and four kinds of `DROP` are one word each;
+`command` matches `pg` for compatibility and `commandTag` is the whole tag - `CREATE INDEX` rather
+than `CREATE`.
+
+`fields` is PostgreJS's, with `fieldName` and `dataTypeId` rather than `pg`'s `name` and
+`dataTypeID`, plus the JS type and whether the column is an array.
+
+### Errors
+
+Errors are PostgreJS's `DatabaseError`. Every structured field you would branch on is the same:
+`code`, `severity`, `detail`, `hint`, `schema`, `table`, `column`, `constraint`. `position` is a
+number where `pg` gives a string, and `line` means something else on each side - `pg`'s is
+PostgreSQL's own C source line, PostgreJS's is the line of SQL. `instanceof` against `pg`'s class
+does not hold.
+
+### Several statements in one `db.execute()`
+
+It works here too, and it is worth knowing how: `pg` takes several statements in one call because a
+parameterless query goes over the simple protocol. This driver reaches the same place through
+PostgreJS's `execute()`, and switches to it on the server's own word - which the server gives while
+parsing, before any statement has run, so the retry costs nothing and risks nothing.
+
+### `connectionString`
+
+Accepted. `pg`'s spelling is translated into PostgreJS's own options, so a `DATABASE_URL` and the
+rest of an existing `node-postgres` setup move over unchanged.
 
 ## Development
 
