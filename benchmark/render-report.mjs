@@ -121,7 +121,11 @@ function headlineTable(results) {
         `${scenario.name} - ${scenario.note}`,
         ms(control.ms),
         bold(ms(driver.ms), won && ratio > 1),
-        won && ratio > 1 ? `**${ratio.toFixed(2)}x**` : 'level',
+        !won
+          ? 'level'
+          : ratio > 1
+            ? `**${ratio.toFixed(2)}x**`
+            : `${(1 / ratio).toFixed(2)}x to \`pg\``,
         heapCell(scenario),
       ];
     }),
@@ -193,6 +197,7 @@ const list = items =>
 function reading(results) {
   const named = results.scenarios.map(s => ({ ...s, ...speedup(s) }));
   const faster = named.filter(s => s.won && s.ratio > 1);
+  const slower = named.filter(s => s.won && s.ratio < 1);
   const levelSpeed = named.filter(s => !s.won);
   const leaner = named.filter(s => s.heapSettled && s.heapRatio > 1);
   const heavier = named.filter(s => s.heapSettled && s.heapRatio < 1);
@@ -218,14 +223,27 @@ function reading(results) {
       )} - so what it costs is collector time on a hot path, not footprint. Measured over 100, 400 and 1600 calls of a point read the gap scales with the call count and the at-rest figure does not move, which is what says churn rather than a structure being held.`
     : '';
 
+  const lost = slower.length
+    ? [
+        `**And one row goes the other way, settled.** ${list(
+          slower.map(
+            s =>
+              `\`pg\` takes ${s.name} ${(1 / s.ratio).toFixed(2)}x, winning ${s.pairs - s.wins} of ${s.pairs} pairs`,
+          ),
+        )}. It is the case where binary costs more than it saves: sixteen bytes have to become a thirty-six character string in canonical form, and \`pg\` is handed that string already made. Half the wire - ${kbOrMb(slower[0].driver.wireKb)} against ${kbOrMb(slower[0].control.wireKb)} - does not pay for the work of rebuilding it.`,
+      ]
+    : [];
+
   return [
     `**Speed follows the payload.** ${list(
       payload.map(s => `${s.name} is ${s.ratio.toFixed(1)}x`),
-    )}, on ${payload[0]?.pairs ?? 0} pairs of ${payload[0]?.pairs ?? 0} each. On the ordinary shapes the gap is small and, ${
+    )}. On the ordinary shapes the gap is small and, ${
       faster.length === named.length
         ? 'on every one of them, repeatable'
         : `on ${list(faster.filter(s => s.ratio <= 1.5).map(s => s.name))}, repeatable`
     }${levelSpeed.length ? `; ${list(levelSpeed.map(s => s.name))} ${levelSpeed.length > 1 ? 'are' : 'is'} not distinguishable from a coin` : ''}.`,
+
+    ...lost,
 
     `**Memory divides the same way, and it is worth being exact about.** Where the payload is large PostgreJS holds far less of it: ${list(
       leaner.map(

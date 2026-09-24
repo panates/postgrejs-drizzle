@@ -22,8 +22,22 @@ export const CONN = {
   database: process.env.PGDATABASE ?? 'postgres',
 };
 
+/**
+ * Every scenario reads what is already stored, rather than asking the
+ * server to build its values on each call.
+ *
+ * That is not tidiness. Generating 5000 boxes out of random floats costs
+ * the server about 20ms, which both drivers pay and neither is being
+ * measured on: generated, the box scenario read 25.8ms against 23.8ms and
+ * said almost nothing; read back from a table it is 4.7 against 3.4. The
+ * same shared cost sits inside every `generate_series` and every
+ * `repeat()`, compressing the ratio towards 1 wherever it is large enough
+ * to matter.
+ */
 export const DDL = [
   `create schema if not exists ${SCHEMA}`,
+
+  // the ordinary shapes: point read, page, insert, concurrent reads
   `drop table if exists ${SCHEMA}.rows`,
   `create table ${SCHEMA}.rows (
      id serial primary key,
@@ -41,6 +55,45 @@ export const DDL = [
             (i % 100000)::numeric / 100, array['a', 'b', 'c'],
             jsonb_build_object('i', i, 'nested', jsonb_build_object('k', 'v'))
      from generate_series(1, ${SEED_ROWS}) as i`,
+
+  // one 100k-element int4[] per value width, in one row of three columns
+  `drop table if exists ${SCHEMA}.arrays`,
+  `create table ${SCHEMA}.arrays as
+     select array(select (i % 9) + 1 from generate_series(1, 100000) i) as single_digit,
+            array(select generate_series(1, 100000)) as mixed,
+            array(select 2147383646 + i from generate_series(1, 100000) i) as full_width`,
+
+  // same reason as the blobs below: decompression is not what is being
+  // compared, and a sequential int4[] compresses very well
+  `alter table ${SCHEMA}.arrays alter column single_digit set storage external,
+                                 alter column mixed set storage external,
+                                 alter column full_width set storage external`,
+  `update ${SCHEMA}.arrays set mixed = mixed`,
+
+  // 5000 rows of the types PostgreJS decodes in binary
+  `drop table if exists ${SCHEMA}.scalars`,
+  `create table ${SCHEMA}.scalars as
+     select (random() * 1e9)::float8 as f,
+            gen_random_uuid() as u
+     from generate_series(1, 5000) i`,
+  `drop table if exists ${SCHEMA}.boxes`,
+  `create table ${SCHEMA}.boxes as
+     select box(point(random() * 1e6, random() * 1e6),
+                point(random() * 1e6, random() * 1e6)) as v
+     from generate_series(1, 5000) i`,
+
+  // one bytea per size. `external` keeps TOAST from compressing them:
+  // repeat('x', n) compresses to nothing, and what would then be measured
+  // is the decompression rather than the transfer.
+  `drop table if exists ${SCHEMA}.blobs`,
+  `create table ${SCHEMA}.blobs (small bytea, medium bytea, large bytea)`,
+  `alter table ${SCHEMA}.blobs alter column small set storage external,
+                                alter column medium set storage external,
+                                alter column large set storage external`,
+  `insert into ${SCHEMA}.blobs (small, medium, large)
+     values (repeat('x', 1024)::bytea,
+             repeat('x', 262144)::bytea,
+             repeat('x', 4194304)::bytea)`,
 ];
 
 /** Each one is a single drizzle call, the way a caller would write it. */
@@ -109,9 +162,7 @@ export const SCENARIOS = [
     iters: 3,
     pairs: 41,
     run: db =>
-      db.execute(
-        sql`select array(select (i % 9) + 1 from generate_series(1, 100000) i) as v`,
-      ),
+      db.execute(sql`select single_digit as v from ${sql.raw(SCHEMA)}.arrays`),
   },
   {
     name: 'int4[] of 100k, mixed widths',
@@ -119,7 +170,7 @@ export const SCENARIOS = [
     iters: 3,
     pairs: 41,
     run: db =>
-      db.execute(sql`select array(select generate_series(1, 100000)) as v`),
+      db.execute(sql`select mixed as v from ${sql.raw(SCHEMA)}.arrays`),
   },
   {
     name: 'int4[] of 100k, full width',
@@ -127,9 +178,48 @@ export const SCENARIOS = [
     iters: 3,
     pairs: 41,
     run: db =>
-      db.execute(
-        sql`select array(select 2147383646 + i from generate_series(1, 100000) i) as v`,
-      ),
+      db.execute(sql`select full_width as v from ${sql.raw(SCHEMA)}.arrays`),
+  },
+  /**
+   * Three types the driver does let PostgreJS decode, chosen because they
+   * disagree about what binary is worth. The width of the binary form is
+   * fixed; the width of the text form is whatever the value needs. Which
+   * way that falls decides the row, and it falls all three ways here.
+   *
+   * The coordinates are wide on purpose, for the reason the three
+   * `int4[]` rows exist: a box of single-digit corners is a box whose
+   * text form is shorter than its binary one, and quoting that as the
+   * cost of a `box` column would be choosing the answer. Measured both
+   * ways, PostgreJS pulls the same 210 KB either way and `pg` goes from
+   * 162 KB to 423.
+   *
+   * Not in this group, and worth knowing why: `timestamptz`, `date`,
+   * `time`, `interval`, `numeric` and `point` are asked for as text by
+   * this driver, because drizzle's own column mappers are written against
+   * the strings `pg` hands them. Measured on 5000 rows, both drivers pull
+   * the same 195 KB for a `timestamptz` column - there is no binary path
+   * to compare, by design rather than by omission.
+   */
+  {
+    name: 'float8 of 5k rows',
+    note: 'eight bytes against up to seventeen digits',
+    iters: 10,
+    pairs: 61,
+    run: db => db.execute(sql`select f as v from ${sql.raw(SCHEMA)}.scalars`),
+  },
+  {
+    name: 'uuid of 5k rows',
+    note: 'sixteen bytes against thirty-six characters',
+    iters: 10,
+    pairs: 61,
+    run: db => db.execute(sql`select u as v from ${sql.raw(SCHEMA)}.scalars`),
+  },
+  {
+    name: 'box of 5k rows',
+    note: 'four float8s against coordinates that use them',
+    iters: 10,
+    pairs: 61,
+    run: db => db.execute(sql`select v from ${sql.raw(SCHEMA)}.boxes`),
   },
   /**
    * A `bytea` at three sizes. Its wire cost has none of the `int4[]`
@@ -142,21 +232,22 @@ export const SCENARIOS = [
     note: 'small enough that the round trip dominates',
     iters: 50,
     pairs: 101,
-    run: db => db.execute(sql`select repeat('x', 1024)::bytea as v`),
+    run: db => db.execute(sql`select small as v from ${sql.raw(SCHEMA)}.blobs`),
   },
   {
     name: 'bytea of 256KB',
     note: 'a document or a thumbnail',
     iters: 20,
     pairs: 61,
-    run: db => db.execute(sql`select repeat('x', 262144)::bytea as v`),
+    run: db =>
+      db.execute(sql`select medium as v from ${sql.raw(SCHEMA)}.blobs`),
   },
   {
     name: 'bytea of 4MB',
     note: 'large enough to be the whole cost',
     iters: 3,
     pairs: 41,
-    run: db => db.execute(sql`select repeat('x', 4194304)::bytea as v`),
+    run: db => db.execute(sql`select large as v from ${sql.raw(SCHEMA)}.blobs`),
   },
 ];
 
