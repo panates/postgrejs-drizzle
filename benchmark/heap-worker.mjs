@@ -14,12 +14,22 @@
  *
  * It prints one JSON line and exits.
  */
-import {
-  CONTROL,
-  DRIVER,
-  openDatabases,
-  scenariosMatching,
-} from './scenarios.mjs';
+import net from 'node:net';
+
+// Bytes the server actually sent, counted at the socket rather than taken
+// from either client's own accounting - the same instrument postgrejs's
+// suite uses, and the reason this is measured at all: the wire cost of the
+// binary format was argued from the encoding here until it was counted,
+// and for an int4[] of small numbers the argument had it backwards.
+let received = 0;
+const push = net.Socket.prototype.push;
+net.Socket.prototype.push = function (chunk, ...rest) {
+  if (chunk) received += chunk.length;
+  return push.call(this, chunk, ...rest);
+};
+
+const { CONTROL, DRIVER, openDatabases, scenariosMatching } =
+  await import('./scenarios.mjs');
 
 const [which, name] = process.argv.slice(2);
 const scenario = scenariosMatching('all').find(s => s.name === name);
@@ -63,7 +73,9 @@ const poll = setInterval(() => {
 }, 5);
 
 const iterations = scenario.iters * 8;
+const receivedBefore = received;
 for (let i = 0; i < iterations; i++) await scenario.run(db, i);
+const wireKb = (received - receivedBefore) / 1024 / iterations;
 
 clearInterval(poll);
 globalThis.gc();
@@ -76,6 +88,7 @@ const measured = {
   // what the batch ever held at once - heap and off-heap together - and
   // what it did not give back
   atRestKb: (atRest.heapUsed + atRest.external) / 1024,
+  wireKb,
   perCallKb: 0, // filled in below
   peakKb: peak / 1024,
   peakHeapOnlyKb: peakHeapOnly / 1024,

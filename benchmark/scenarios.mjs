@@ -93,13 +93,43 @@ export const SCENARIOS = [
         ),
       ),
   },
+  /**
+   * The same 100k-element `int4[]` at three value widths, because the
+   * width decides the answer and one row would be a choice dressed as a
+   * measurement. PostgreJS reads the column in binary, which costs 8 bytes
+   * an element whatever the value; `pg` reads it as text, which costs a
+   * byte a digit. So an `int4` column holding single digits flatters the
+   * text form, and one holding values that use the type flatters the
+   * binary one - measured, 195 KB against 781 on the first and 1074
+   * against 781 on the last. Neither is "the" int4 array, so all three run.
+   */
   {
-    name: 'int4[] of 100k',
-    note: 'one array column',
+    name: 'int4[] of 100k, single digits',
+    note: 'values 1-9, the width text is cheapest at',
+    iters: 3,
+    pairs: 41,
+    run: db =>
+      db.execute(
+        sql`select array(select (i % 9) + 1 from generate_series(1, 100000) i) as v`,
+      ),
+  },
+  {
+    name: 'int4[] of 100k, mixed widths',
+    note: 'values 1-100000',
     iters: 3,
     pairs: 41,
     run: db =>
       db.execute(sql`select array(select generate_series(1, 100000)) as v`),
+  },
+  {
+    name: 'int4[] of 100k, full width',
+    note: 'values that use the whole type',
+    iters: 3,
+    pairs: 41,
+    run: db =>
+      db.execute(
+        sql`select array(select 2147383646 + i from generate_series(1, 100000) i) as v`,
+      ),
   },
   {
     name: 'bytea of 4MB',
