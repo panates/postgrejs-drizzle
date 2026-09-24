@@ -144,7 +144,7 @@ and the numbers should not be read across. Where the method itself differs, and 
 | --- | --- | --- |
 | process | one child per library | the same |
 | baseline | forced GC, then the run - warmup included in the window | forced GC after warmup, so one-time structures sit under it |
-| sampled | `heapUsed` | `heapUsed` + `external`, as one sample |
+| sampled | `heapUsed` + `external`, as one sample | the same |
 | reported | peak growth, and GC ms/op | peak, allocation per call, and heap at rest |
 | statistic | median of 3 to 9 repeats | median of paired runs, with a sign test on the split |
 
@@ -152,8 +152,10 @@ The first difference is a choice: baking warmup into the window measures a scena
 answers "what does this cost" but cannot separate what a driver holds from what a call throws away.
 Both are reported here instead, because on the small workloads they point opposite ways.
 
-The second is not a choice. `heapUsed` does not count a `Buffer`, and a `bytea` is a `Buffer`, so
-that column is blind to exactly the payload it exists to measure - visible in its own Large Blob
-Fetch row, which moves 25 MB per op and reports a 2 MB peak. It is written up for that repository as
-`peak-heap-misses-buffers.md`; nothing is worked around here beyond counting the byte that the other
-one misses.
+The memory accounting used to differ and no longer does. That suite sampled `heapUsed` alone, which
+cannot see a `Buffer` - and a `bytea` is a `Buffer` - so its Peak Heap was blind to exactly the
+payload it exists to measure: its Large Blob Fetch row moved 25 MB per op and reported a 2 MB peak.
+Reported from here, fixed there in `f074d7a`, and it turned up one more thing on the way: a large
+string built out of a buffer is external too, at two bytes a character, which is how `pg` holds a
+`bytea`. Both suites now count `heapUsed + external` from one sample, so their memory figures are
+the same kind of number even though the workloads are not.
