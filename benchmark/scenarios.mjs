@@ -24,7 +24,18 @@ export const CONN = {
 
 /**
  * Every scenario reads what is already stored, rather than asking the
- * server to build its values on each call.
+ * server to build its values on each call, and every one binds at least
+ * one parameter.
+ *
+ * The parameter is a `limit` that selects the whole result, and it is
+ * there to make the comparison an even one rather than to filter
+ * anything: `pg` sends a query with no values over PostgreSQL's simple
+ * protocol - `requiresPreparation()` in `pg/lib/query.js` returns false
+ * without a name, a row limit or values - and takes the extended one as
+ * soon as a parameter appears, which is what PostgreJS's `query()` always
+ * speaks. Without it, nine of these scenarios would have been comparing
+ * two different protocols; on the 1KB `bytea` that was worth almost the
+ * whole memory difference between them.
  *
  * That is not tidiness. Generating 5000 boxes out of random floats costs
  * the server about 20ms, which both drivers pay and neither is being
@@ -163,7 +174,9 @@ export const SCENARIOS = [
     iters: 3,
     pairs: 41,
     run: db =>
-      db.execute(sql`select single_digit as v from ${sql.raw(SCHEMA)}.arrays`),
+      db.execute(
+        sql`select single_digit as v from ${sql.raw(SCHEMA)}.arrays limit ${1}`,
+      ),
   },
   {
     name: 'int4[] of 100k, mixed widths',
@@ -171,7 +184,9 @@ export const SCENARIOS = [
     iters: 3,
     pairs: 41,
     run: db =>
-      db.execute(sql`select mixed as v from ${sql.raw(SCHEMA)}.arrays`),
+      db.execute(
+        sql`select mixed as v from ${sql.raw(SCHEMA)}.arrays limit ${1}`,
+      ),
   },
   {
     name: 'int4[] of 100k, full width',
@@ -179,7 +194,9 @@ export const SCENARIOS = [
     iters: 3,
     pairs: 41,
     run: db =>
-      db.execute(sql`select full_width as v from ${sql.raw(SCHEMA)}.arrays`),
+      db.execute(
+        sql`select full_width as v from ${sql.raw(SCHEMA)}.arrays limit ${1}`,
+      ),
   },
   /**
    * Three types the driver does let PostgreJS decode, chosen because they
@@ -210,28 +227,37 @@ export const SCENARIOS = [
     iters: 10,
     pairs: 61,
     run: db =>
-      db.execute(sql`select small_f as v from ${sql.raw(SCHEMA)}.scalars`),
+      db.execute(
+        sql`select small_f as v from ${sql.raw(SCHEMA)}.scalars limit ${5000}`,
+      ),
   },
   {
     name: 'float8 of 5k rows, full width',
     note: 'eight bytes against seventeen significant digits',
     iters: 10,
     pairs: 61,
-    run: db => db.execute(sql`select f as v from ${sql.raw(SCHEMA)}.scalars`),
+    run: db =>
+      db.execute(
+        sql`select f as v from ${sql.raw(SCHEMA)}.scalars limit ${5000}`,
+      ),
   },
   {
     name: 'uuid of 5k rows',
     note: 'sixteen bytes against thirty-six characters',
     iters: 10,
     pairs: 61,
-    run: db => db.execute(sql`select u as v from ${sql.raw(SCHEMA)}.scalars`),
+    run: db =>
+      db.execute(
+        sql`select u as v from ${sql.raw(SCHEMA)}.scalars limit ${5000}`,
+      ),
   },
   {
     name: 'box of 5k rows',
     note: 'four float8s against coordinates that use them',
     iters: 10,
     pairs: 61,
-    run: db => db.execute(sql`select v from ${sql.raw(SCHEMA)}.boxes`),
+    run: db =>
+      db.execute(sql`select v from ${sql.raw(SCHEMA)}.boxes limit ${5000}`),
   },
   /**
    * A `bytea` at three sizes. Its wire cost has none of the `int4[]`
@@ -244,7 +270,10 @@ export const SCENARIOS = [
     note: 'small enough that the round trip dominates',
     iters: 50,
     pairs: 101,
-    run: db => db.execute(sql`select small as v from ${sql.raw(SCHEMA)}.blobs`),
+    run: db =>
+      db.execute(
+        sql`select small as v from ${sql.raw(SCHEMA)}.blobs limit ${1}`,
+      ),
   },
   {
     name: 'bytea of 256KB',
@@ -252,14 +281,19 @@ export const SCENARIOS = [
     iters: 20,
     pairs: 61,
     run: db =>
-      db.execute(sql`select medium as v from ${sql.raw(SCHEMA)}.blobs`),
+      db.execute(
+        sql`select medium as v from ${sql.raw(SCHEMA)}.blobs limit ${1}`,
+      ),
   },
   {
     name: 'bytea of 4MB',
     note: 'large enough to be the whole cost',
     iters: 3,
     pairs: 41,
-    run: db => db.execute(sql`select large as v from ${sql.raw(SCHEMA)}.blobs`),
+    run: db =>
+      db.execute(
+        sql`select large as v from ${sql.raw(SCHEMA)}.blobs limit ${1}`,
+      ),
   },
 ];
 

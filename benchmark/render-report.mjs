@@ -383,16 +383,17 @@ is not worth quoting to two figures.
 
 ${reading(results)}
 
-## The asymmetry in it
+## Both sides speak the same protocol
 
-Each driver is called the way drizzle calls it, which is the honest end-to-end comparison and also
-means the two are not always speaking the same protocol. \`pg\` sends a parameterless query over
-PostgreSQL's **simple** protocol - \`requiresPreparation()\` in \`pg/lib/query.js\` returns false with no
-name, no row limit and no values - and switches to the extended one as soon as a parameter appears.
-PostgreJS's \`query()\` is always extended. So the four scenarios that bind a parameter compare like
-with like, and the payload ones - every \`int4[]\`, \`float8\`, \`uuid\`, \`box\` and \`bytea\` row - do not.
+They did not always. \`pg\` sends a query with no values over PostgreSQL's **simple** protocol -
+\`requiresPreparation()\` in \`pg/lib/query.js\` returns false without a name, a row limit or values -
+and takes the extended one as soon as a parameter appears, which is what PostgreJS's \`query()\` always
+speaks. Nine of these scenarios read a stored value and needed no parameter, so nine of them were
+comparing two different protocols.
 
-Measured, by giving \`pg\` a statement name so it takes the extended path too:
+That is worth knowing even though it is fixed, because it was not small where the payload was: on a
+1KB \`bytea\`, the simple protocol accounted for almost the whole memory difference between the two
+drivers. Measured at the time, by giving \`pg\` a statement name so it took the extended path:
 
 | | \`pg\` simple | \`pg\` extended | PostgreJS |
 | --- | ---: | ---: | ---: |
@@ -401,16 +402,14 @@ Measured, by giving \`pg\` a statement name so it takes the extended path too:
 | \`bytea\` 256KB | 633.7 KB / 4.462 ms | 757.3 KB / 5.321 ms | 530.9 KB / 2.305 ms |
 | \`int4[]\` full width | 2191 KB / 48.6 ms | 2205 KB / 42.0 ms | 1565 KB / 8.8 ms |
 
-It matters in one place and not the others. On the 1KB \`bytea\` nearly the whole memory difference is
-the protocol: like for like it is 13.7 KB against 14.0 rather than 12.3 against 14.0, and PostgreJS
-is the faster of the two either way. On \`select 1\` it accounts for 1.8 KB of a 6.3 KB gap and the
-rest is ours. On the large payloads it accounts for nothing - \`pg\`'s extended path is no better than
-its simple one and on 256KB it is worse, so the table is already comparing against its better option.
+Every scenario now binds a parameter - a \`limit\` that selects the whole result, there to even the
+comparison rather than to filter anything - and \`pg\` sends Parse, Bind and Execute for all fourteen,
+checked by counting the messages its connection actually writes.
 
-The choice is not free for \`pg\` either, and not in the client: a simple query is parsed by the server
-on every call, where an extended one against a cached statement is not. That is wall clock rather
-than allocation, and it is part of why the timings do not move the way the protocol difference
-alone would suggest.
+What is left is a difference between the drivers rather than between protocols, and it stays: \`pg\`
+binds an unnamed statement, which the server parses again on every call, while PostgreJS names and
+caches one and reuses it. That is each driver's own default on the same protocol, and it is what the
+point read's margin is made of.
 
 ## How this differs from postgrejs's own suite
 
