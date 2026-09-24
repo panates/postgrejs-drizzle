@@ -274,10 +274,17 @@ does not hold.
 
 ### Several statements in one `db.execute()`
 
-It works here too, and it is worth knowing how: `pg` takes several statements in one call because a
-parameterless query goes over the simple protocol. This driver reaches the same place through
-PostgreJS's `execute()`, and switches to it on the server's own word - which the server gives while
-parsing, before any statement has run, so the retry costs nothing and risks nothing.
+It works here too, and it is worth knowing how. `pg` takes several statements in one call because a
+parameterless query goes over the simple protocol - it picks the protocol from whether the call
+happened to carry parameters. PostgreJS's `query()` is always the extended one, and its `execute()`
+is the counterpart, so the driver has to choose; it asks the client with `isMultiStatement()`, a
+scanner over everything a `;` can hide inside - string and dollar-quoted literals, quoted
+identifiers, both comment forms - and sends the right one first time.
+
+A multi-statement call still gets the server's own error when it carries parameters, since a simple
+query has nowhere to put them. And if the scanner is ever wrong the other way, the 42601 fallback is
+still behind it: the server raises that while parsing, before any statement has run, so the retry
+costs nothing and risks nothing.
 
 ### `connectionString`
 

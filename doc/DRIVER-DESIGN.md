@@ -239,9 +239,12 @@ the upstream suite never reads `.command` and never deep-compares a `db.execute`
 **Multi-statement `db.execute` needs PostgreJS's `execute()`.** `db.execute()` with two statements in one template works on
 `pg` because a parameterless query goes over the simple protocol; PostgreJS's `query()` is always the
 extended protocol and answers `42601 cannot insert multiple commands into a prepared statement`.
-`connection.execute()` is the counterpart, and three things make routing to it cheap and safe:
-`42601` is raised at Parse, before anything runs (verified - the table was still empty after the
-failed call), so falling back on that code needs no SQL parsing and cannot double a side effect;
+`connection.execute()` is the counterpart, and since 3.11.0 `isMultiStatement()` answers which of
+the two a given string needs, so the choice is made before anything is sent - a scanner over the
+quoting rules a `;` can hide inside, rather than `pg`'s guess from whether parameters are present.
+Three things make routing cheap and safe: `42601` is raised at Parse, before anything runs (verified
+- the table was still empty after the failed call), so the fallback that still sits behind the
+scanner needs no SQL parsing and cannot double a side effect;
 `execute()` honours `fetchAsString` and `unknownTypesAsString`, so §8's value shapes are unchanged
 (verified, identical values on both paths); and it takes no parameters (`42P02`), so the fallback
 only applies when `params.length === 0` - which is the only case that can carry several statements
