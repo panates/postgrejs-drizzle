@@ -40,26 +40,30 @@ medians per call.
 
 | Scenario                                                                  | node-postgres | postgrejs     |           | peak memory            |
 | ------------------------------------------------------------------------- | ------------- | ------------- | --------- | ---------------------- |
-| point read - one row by primary key                                       | 0.565 ms      | **0.516 ms**  | **1.10x** | **11.5 MB** -> 12.2 MB |
-| page of 200 - nine columns, mixed types                                   | 1.048 ms      | 1.009 ms      | level     | 56.7 MB -> **53.7 MB** |
-| insert returning - six parameters                                         | 0.468 ms      | **0.441 ms**  | **1.06x** | **10.2 MB** -> 13.1 MB |
-| concurrent reads - 20 point reads at once, pool of 10                     | 1.639 ms      | **1.575 ms**  | **1.04x** | **15.1 MB** -> 17.7 MB |
-| int4[] of 100k, single digits - values 1-9, the width text is cheapest at | 17.285 ms     | **15.795 ms** | **1.09x** | 74.2 MB -> **49.4 MB** |
-| int4[] of 100k, mixed widths - values 1-100000                            | 25.411 ms     | **11.593 ms** | **2.19x** | 80.7 MB -> **49.4 MB** |
-| int4[] of 100k, full width - values that use the whole type               | 42.502 ms     | **15.934 ms** | **2.67x** | 93.1 MB -> **49.4 MB** |
-| bytea of 4MB - one binary column                                          | 71.006 ms     | **24.050 ms** | **2.95x** | 48.3 MB -> **31.9 MB** |
+| point read - one row by primary key                                       | 0.582 ms      | **0.525 ms**  | **1.11x** | **11.6 MB** -> 12.1 MB |
+| page of 200 - nine columns, mixed types                                   | 1.048 ms      | **1.003 ms**  | **1.05x** | 56.6 MB -> **53.1 MB** |
+| insert returning - six parameters                                         | 0.552 ms      | **0.550 ms**  | **1.00x** | **10.2 MB** -> 13.3 MB |
+| concurrent reads - 20 point reads at once, pool of 10                     | 1.668 ms      | **1.609 ms**  | **1.04x** | **15.1 MB** -> 17.7 MB |
+| int4[] of 100k, single digits - values 1-9, the width text is cheapest at | 17.025 ms     | **15.212 ms** | **1.12x** | 74.2 MB -> **48.6 MB** |
+| int4[] of 100k, mixed widths - values 1-100000                            | 25.926 ms     | **11.456 ms** | **2.26x** | 80.6 MB -> **49.4 MB** |
+| int4[] of 100k, full width - values that use the whole type               | 42.519 ms     | **15.726 ms** | **2.70x** | 97.1 MB -> **48.6 MB** |
+| bytea of 1KB - small enough that the round trip dominates                 | 0.532 ms      | **0.468 ms**  | **1.14x** | **8.2 MB** -> 9.6 MB   |
+| bytea of 256KB - a document or a thumbnail                                | 5.386 ms      | **2.022 ms**  | **2.66x** | 75.9 MB -> **33.0 MB** |
+| bytea of 4MB - large enough to be the whole cost                          | 71.615 ms     | **24.961 ms** | **2.87x** | 48.3 MB -> **32.3 MB** |
 
 And which driver actually won, pair by pair:
 
 | Scenario                      | pairs | postgrejs faster in | odds of that by luck |
 | ----------------------------- | ----- | ------------------- | -------------------- |
-| point read                    | 101   | 77                  | < 1 in 10^6          |
-| page of 200                   | 101   | 55                  | not distinguishable  |
-| insert returning              | 101   | 71                  | < 1 in 10^4          |
+| point read                    | 101   | 71                  | < 1 in 10^4          |
+| page of 200                   | 101   | 63                  | p = 0.017            |
+| insert returning              | 101   | 63                  | p = 0.017            |
 | concurrent reads              | 61    | 43                  | p = 0.002            |
-| int4[] of 100k, single digits | 41    | 39                  | < 1 in 10^9          |
+| int4[] of 100k, single digits | 41    | 41                  | < 1 in 10^12         |
 | int4[] of 100k, mixed widths  | 41    | 41                  | < 1 in 10^12         |
 | int4[] of 100k, full width    | 41    | 41                  | < 1 in 10^12         |
+| bytea of 1KB                  | 101   | 82                  | < 1 in 10^9          |
+| bytea of 256KB                | 61    | 61                  | < 1 in 10^18         |
 | bytea of 4MB                  | 41    | 41                  | < 1 in 10^12         |
 
 Memory is measured the same way and counted the same way - one child process per driver, so what a
@@ -77,6 +81,8 @@ pg's 4MB column as 0.4 MB while it is really holding 49 MB of it.
 | int4[] of 100k, single digits | 15    | 15                 | < 1 in 10^4          |
 | int4[] of 100k, mixed widths  | 15    | 15                 | < 1 in 10^4          |
 | int4[] of 100k, full width    | 15    | 15                 | < 1 in 10^4          |
+| bytea of 1KB                  | 15    | 0                  | < 1 in 10^4          |
+| bytea of 256KB                | 15    | 15                 | < 1 in 10^4          |
 | bytea of 4MB                  | 15    | 15                 | < 1 in 10^4          |
 
 Those two are different questions, and the answers are not the same. What a driver holds warm is one
@@ -86,13 +92,15 @@ collector, and it grows with the size of the batch rather than saying anything a
 
 | Scenario                      | at rest (node-postgres / postgrejs) | allocated per call (node-postgres / postgrejs) | off the wire per call (node-postgres / postgrejs) |
 | ----------------------------- | ----------------------------------- | ---------------------------------------------- | ------------------------------------------------- |
-| point read                    | 12.0 MB / 12.2 MB                   | 29.5 KB / 31.3 KB                              | 0.4 KB / 0.2 KB                                   |
-| page of 200                   | 12.3 MB / 12.3 MB                   | 363.1 KB / 344.0 KB                            | 29.6 KB / 35.5 KB                                 |
-| insert returning              | 12.0 MB / 12.1 MB                   | 26.1 KB / 33.6 KB                              | 0.1 KB / 0.0 KB                                   |
-| concurrent reads              | 12.5 MB / 12.7 MB                   | 481.9 KB / 566.4 KB                            | 7.8 KB / 4.0 KB                                   |
-| int4[] of 100k, single digits | 13.6 MB / 12.9 MB                   | 3.1 MB / 2.1 MB                                | 195.4 KB / 781.3 KB                               |
+| point read                    | 12.0 MB / 12.2 MB                   | 29.7 KB / 31.1 KB                              | 0.4 KB / 0.2 KB                                   |
+| page of 200                   | 12.3 MB / 12.3 MB                   | 362.1 KB / 339.6 KB                            | 29.6 KB / 35.5 KB                                 |
+| insert returning              | 12.0 MB / 12.1 MB                   | 26.2 KB / 34.0 KB                              | 0.1 KB / 0.0 KB                                   |
+| concurrent reads              | 12.5 MB / 12.7 MB                   | 482.1 KB / 566.5 KB                            | 7.8 KB / 4.0 KB                                   |
+| int4[] of 100k, single digits | 13.6 MB / 12.8 MB                   | 3.1 MB / 2.0 MB                                | 195.4 KB / 781.3 KB                               |
 | int4[] of 100k, mixed widths  | 13.7 MB / 12.9 MB                   | 3.4 MB / 2.1 MB                                | 575.2 KB / 781.3 KB                               |
-| int4[] of 100k, full width    | 13.7 MB / 12.8 MB                   | 3.9 MB / 2.1 MB                                | 1.0 MB / 781.3 KB                                 |
+| int4[] of 100k, full width    | 13.7 MB / 12.8 MB                   | 4.0 MB / 2.0 MB                                | 1.0 MB / 781.3 KB                                 |
+| bytea of 1KB                  | 11.9 MB / 12.1 MB                   | 20.9 KB / 24.7 KB                              | 2.1 KB / 1.0 KB                                   |
+| bytea of 256KB                | 12.5 MB / 12.4 MB                   | 485.6 KB / 211.1 KB                            | 512.1 KB / 256.0 KB                               |
 | bytea of 4MB                  | 19.0 MB / 16.1 MB                   | 2.0 MB / 1.3 MB                                | 8.0 MB / 4.0 MB                                   |
 
 The per-call column is the steadier of the two. A peak is whatever was alive at one moment, and on
@@ -104,23 +112,24 @@ is not worth quoting to two figures.
 
 ## Reading them
 
-**Speed follows the payload.** int4[] of 100k, mixed widths is 2.2x, int4[] of 100k, full width is
-2.7x and bytea of 4MB is 3.0x, on 41 pairs of 41 each. On the ordinary shapes the gap is small and,
-on point read, insert returning, concurrent reads and int4[] of 100k, single digits, repeatable;
-page of 200 is not distinguishable from a coin.
+**Speed follows the payload.** int4[] of 100k, mixed widths is 2.3x, int4[] of 100k, full width is
+2.7x, bytea of 256KB is 2.7x and bytea of 4MB is 2.9x, on 41 pairs of 41 each. On the ordinary
+shapes the gap is small and, on every one of them, repeatable.
 
 **Memory divides the same way, and it is worth being exact about.** Where the payload is large
-PostgreJS holds far less of it: page of 200 peaks at 53.7 MB against 56.7 MB, int4[] of 100k, single
-digits peaks at 49.4 MB against 74.2 MB, int4[] of 100k, mixed widths peaks at 49.4 MB against 80.7
-MB, int4[] of 100k, full width peaks at 49.4 MB against 93.1 MB and bytea of 4MB peaks at 31.9 MB
-against 48.3 MB. On the small workloads it is the other way: point read allocates 31.3 KB a call
-against 29.5, insert returning allocates 33.6 KB a call against 26.1 and concurrent reads allocates
-566.4 KB a call against 481.9. That is garbage rather than growth, and the distinction is the whole
-point: at rest the two are within a few hundred KB of each other - 12.2 MB against 12.0 MB on point
-read, 12.1 MB against 12.0 MB on insert returning and 12.7 MB against 12.5 MB on concurrent reads -
-so what it costs is collector time on a hot path, not footprint. Measured over 100, 400 and 1600
-calls of a point read the gap scales with the call count and the at-rest figure does not move, which
-is what says churn rather than a structure being held.
+PostgreJS holds far less of it: page of 200 peaks at 53.1 MB against 56.6 MB, int4[] of 100k, single
+digits peaks at 48.6 MB against 74.2 MB, int4[] of 100k, mixed widths peaks at 49.4 MB against 80.6
+MB, int4[] of 100k, full width peaks at 48.6 MB against 97.1 MB, bytea of 256KB peaks at 33.0 MB
+against 75.9 MB and bytea of 4MB peaks at 32.3 MB against 48.3 MB. On the small workloads it is the
+other way: point read allocates 31.1 KB a call against 29.7, insert returning allocates 34.0 KB a
+call against 26.2, concurrent reads allocates 566.5 KB a call against 482.1 and bytea of 1KB
+allocates 24.7 KB a call against 20.9. That is garbage rather than growth, and the distinction is
+the whole point: at rest the two are within a few hundred KB of each other - 12.2 MB against 12.0 MB
+on point read, 12.1 MB against 12.0 MB on insert returning, 12.7 MB against 12.5 MB on concurrent
+reads and 12.1 MB against 11.9 MB on bytea of 1KB - so what it costs is collector time on a hot
+path, not footprint. Measured over 100, 400 and 1600 calls of a point read the gap scales with the
+call count and the at-rest figure does not move, which is what says churn rather than a structure
+being held.
 
 **The `bytea` row is the one to read twice.** 2.0 MB a call against 1.3 MB, and an earlier revision
 of this file had it the other way round - 0.39 MB against 0.75 MB - because it measured `heapUsed`
@@ -133,19 +142,21 @@ sounds, and the three `int4[]` rows are there because the values decide it rathe
 
 - values 1-9, the width text is cheapest at: 195.4 KB off the wire against 781.3 KB, and 1.1x on
   the clock.
-- values 1-100000: 575.2 KB off the wire against 781.3 KB, and 2.2x on the clock.
+- values 1-100000: 575.2 KB off the wire against 781.3 KB, and 2.3x on the clock.
 - values that use the whole type: 1.0 MB off the wire against 781.3 KB, and 2.7x on the clock.
 - Binary costs 8 bytes an element whatever the value; text costs a byte a digit. So a column of
   single digits flatters the text form and one that uses the type flatters the binary one, and
   quoting either alone would be a choice dressed as a measurement.
-- A `bytea` has no such freedom - it is `\x`-prefixed hex, two characters a byte, always - so
-  there the wire saving is real and fixed: 8.0 MB against 4.0 MB.
+- A `bytea` has no such freedom - it is `\x`-prefixed hex, two characters a byte, whatever the
+  bytes are - so there the wire saving is real and fixed at half. What varies instead is whether the
+  payload is large enough to matter next to the round trip: 1KB is 1.1x (2.1 KB against 1.0 KB),
+  256KB is 2.7x (512.1 KB against 256.0 KB) and 4MB is 2.9x (8.0 MB against 4.0 MB).
 
 **What it is winning is mostly the parse, not the bytes.** At full width PostgreJS pulls 781.3 KB
 against 1.0 MB and is 2.7x faster; at single digits it pulls four times the bytes `pg` does and is
-still ahead, in 39 of 41 pairs. The text path materialises the whole array literal as one string and
+still ahead, in 41 of 41 pairs. The text path materialises the whole array literal as one string and
 walks it, where the binary path reads elements out of the buffer it already has - which is the same
-reason it allocates 2.1 MB a call against 3.9 MB.
+reason it allocates 2.0 MB a call against 4.0 MB.
 
 **Where it reaches you.** Through drizzle, these are `bytea` columns, array columns, and anything
 large in a raw `db.execute()`. A schema of text, integers and timestamps sees the top of that table

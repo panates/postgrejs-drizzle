@@ -159,7 +159,7 @@ function figures(results) {
     .filter(s => s.name.startsWith('int4[]'))
     .map(speedup);
   const array = speedup(by('int4[] of 100k, full width'));
-  const bytes = speedup(by('bytea'));
+  const bytes = speedup(by('bytea of 4MB'));
   const point = by('point read');
   return {
     bytesDriverMs: bytes.driver.ms.toFixed(1),
@@ -201,7 +201,8 @@ function reading(results) {
   const array = named.find(s =>
     s.name.startsWith('int4[] of 100k, full width'),
   );
-  const bytes = named.find(s => s.name.startsWith('bytea'));
+  const sizes = named.filter(s => s.name.startsWith('bytea'));
+  const bytes = named.find(s => s.name.startsWith('bytea of 4MB'));
 
   const fixed = heavier.length
     ? `On the small workloads it is the other way: ${list(
@@ -244,7 +245,12 @@ function reading(results) {
       )
       .join(
         '\n',
-      )}\n- Binary costs 8 bytes an element whatever the value; text costs a byte a digit. So a column of single digits flatters the text form and one that uses the type flatters the binary one, and quoting either alone would be a choice dressed as a measurement.\n- A \`bytea\` has no such freedom - it is \`\\x\`-prefixed hex, two characters a byte, always - so there the wire saving is real and fixed: ${kbOrMb(bytes.control.wireKb)} against ${kbOrMb(bytes.driver.wireKb)}.`,
+      )}\n- Binary costs 8 bytes an element whatever the value; text costs a byte a digit. So a column of single digits flatters the text form and one that uses the type flatters the binary one, and quoting either alone would be a choice dressed as a measurement.\n- A \`bytea\` has no such freedom - it is \`\\x\`-prefixed hex, two characters a byte, whatever the bytes are - so there the wire saving is real and fixed at half. What varies instead is whether the payload is large enough to matter next to the round trip: ${list(
+      sizes.map(
+        z =>
+          `${z.name.replace('bytea of ', '')} is ${z.won && z.ratio > 1 ? `${z.ratio.toFixed(1)}x` : 'level'} (${kbOrMb(z.control.wireKb)} against ${kbOrMb(z.driver.wireKb)})`,
+      ),
+    )}.`,
 
     `**What it is winning is mostly the parse, not the bytes.** At full width PostgreJS pulls ${kbOrMb(array.driver.wireKb)} against ${kbOrMb(array.control.wireKb)} and is ${array.ratio.toFixed(1)}x faster; at single digits it pulls four times the bytes \`pg\` does and is still ahead, in ${widths[0].wins} of ${widths[0].pairs} pairs. The text path materialises the whole array literal as one string and walks it, where the binary path reads elements out of the buffer it already has - which is the same reason it allocates ${kbOrMb(array.driver.perCallKb)} a call against ${kbOrMb(array.control.perCallKb)}.`,
 

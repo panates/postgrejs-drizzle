@@ -131,9 +131,29 @@ export const SCENARIOS = [
         sql`select array(select 2147383646 + i from generate_series(1, 100000) i) as v`,
       ),
   },
+  /**
+   * A `bytea` at three sizes. Its wire cost has none of the `int4[]`
+   * freedom - text is `\x`-prefixed hex, two characters a byte, whatever
+   * the bytes are - so what varies here is not the encoding's price but
+   * whether the payload is big enough to matter next to a round trip.
+   */
+  {
+    name: 'bytea of 1KB',
+    note: 'small enough that the round trip dominates',
+    iters: 50,
+    pairs: 101,
+    run: db => db.execute(sql`select repeat('x', 1024)::bytea as v`),
+  },
+  {
+    name: 'bytea of 256KB',
+    note: 'a document or a thumbnail',
+    iters: 20,
+    pairs: 61,
+    run: db => db.execute(sql`select repeat('x', 262144)::bytea as v`),
+  },
   {
     name: 'bytea of 4MB',
-    note: 'one binary column',
+    note: 'large enough to be the whole cost',
     iters: 3,
     pairs: 41,
     run: db => db.execute(sql`select repeat('x', 4194304)::bytea as v`),
