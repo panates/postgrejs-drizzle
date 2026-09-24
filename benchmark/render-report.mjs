@@ -262,10 +262,10 @@ function reading(results) {
     )} for the 100k \`int4[]\`, which each sends as text. The array is text on purpose - PostgreJS
      stopped declaring an element type for an array of numbers because \`[1, 2]\` is one of six array
      types depending on where it lands and they have no casts between them, so declaring \`int4[]\`
-     broke four of the six. With identical bytes going out, ${arrayWrite.name.split(' - ')[0]} is
-     ${says(arrayWrite)} and allocates ${kbOrMb(arrayWrite.driver.perCallKb)} a call against
-     ${kbOrMb(arrayWrite.control.perCallKb)} building the same literal, which is written up for that
-     repository rather than worked around here.`,
+     broke four of the six. With identical bytes going out, what separates the two is
+     the writing of the literal, and that row has moved twice: it was ${says(arrayWrite)} after
+     PostgreJS stopped quoting and re-escaping every element of an array it writes, and was 1.12x to
+     \`pg\` before. Reported from here rather than worked around, measured there, fixed there.`,
 
     `**Where a write does save bytes, it is the statement and not the data.** ${bulkWrite.name.split(' - ')[0]}
      sends ${kbOrMb(bulkWrite.driver.wireOutKb)} against ${kbOrMb(bulkWrite.control.wireOutKb)} - the
@@ -338,6 +338,12 @@ separately, and a sign test asks how likely that split would be from a fair coin
 counts and by how much is thrown away, which is exactly what lets it survive a noisy machine: it says
 whether a difference is real, and says nothing about its size - that is what the median column is
 for.
+
+The allocation column understates, and knowing by how much is worth more than the figure: a peak
+above a warm baseline counts only the garbage the collector had not reached yet. Measured in a
+GC-free window by postgrejs's own repository, one row's intermediate array is 16 B at one column and
+120 B at nine, where a peak sample here reads 3.7 and 9.4. The column is therefore good for
+comparing two drivers on the same scenario and bad for asking what a row costs.
 
 Latency and memory are separate passes. Polling \`process.memoryUsage()\` inside the timed window costs
 more than the calls being timed and lands unevenly on the two drivers; an early revision of this file
