@@ -79,14 +79,12 @@ const speedup = scenario => {
   };
 };
 
-/** `63.6 MB -> 1.7 MB`, or the same with nothing claimed about it. */
-function heapCell(scenario) {
-  const { control, driver, heapSettled, heapRatio } = speedup(scenario);
-  if (!heapSettled)
-    return `${mb(control.peakKb)} -> ${mb(driver.peakKb)} (level)`;
-  return heapRatio > 1
-    ? `${mb(control.peakKb)} -> **${mb(driver.peakKb)}**`
-    : `**${mb(control.peakKb)}** -> ${mb(driver.peakKb)}`;
+/** `**2.65x**`, `1.61x to \`pg\``, or `level` - for either measure. */
+function verdict(settled, ratio) {
+  if (!settled) return 'level';
+  return ratio > 1
+    ? `**${ratio.toFixed(2)}x**`
+    : `${(1 / ratio).toFixed(2)}x to \`pg\``;
 }
 
 /** What a driver holds warm, and what one call throws away. */
@@ -112,21 +110,30 @@ function memoryTable(results) {
   );
 }
 
+/**
+ * Four columns, two lines to a cell: the time on the first and the peak
+ * memory under it, for each driver, with both verdicts in the last one. A
+ * row is two numbers about one call, and standing them side by side made
+ * the table wider than it was informative.
+ */
 function headlineTable(results) {
+  const pair = (top, bottom) => `${top}<br>${bottom}`;
   return table(
-    ['Scenario', CONTROL, DRIVER, '', 'peak memory'],
+    ['Scenario', `${CONTROL}<br>peak memory`, `${DRIVER}<br>peak memory`, ''],
     results.scenarios.map(scenario => {
-      const { control, driver, ratio, won } = speedup(scenario);
+      const { control, driver, ratio, won, heapRatio, heapSettled } =
+        speedup(scenario);
       return [
         `${scenario.name} - ${scenario.note}`,
-        ms(control.ms),
-        bold(ms(driver.ms), won && ratio > 1),
-        !won
-          ? 'level'
-          : ratio > 1
-            ? `**${ratio.toFixed(2)}x**`
-            : `${(1 / ratio).toFixed(2)}x to \`pg\``,
-        heapCell(scenario),
+        pair(
+          bold(ms(control.ms), won && ratio < 1),
+          bold(mb(control.peakKb), heapSettled && heapRatio < 1),
+        ),
+        pair(
+          bold(ms(driver.ms), won && ratio > 1),
+          bold(mb(driver.peakKb), heapSettled && heapRatio > 1),
+        ),
+        pair(verdict(won, ratio), verdict(heapSettled, heapRatio)),
       ];
     }),
   );
