@@ -116,7 +116,7 @@ and has no seam a third-party driver can enter. So they need their own `dbCreden
 It is a drop-in swap for `drizzle-orm/node-postgres`: the same `drizzle(client)` call, the same
 schema, the same queries, the same migrations. What you get for it:
 
-- **Faster where the payload is large** - 2.2x on a 100k-element array column and 3.2x on a 4MB
+- **Faster where the payload is large** - 2.3x on a 100k-element array column and 2.9x on a 4MB
   `bytea`, on a fraction of the heap, because the values arrive in PostgreSQL's binary format rather
   than as text to be parsed.
 - **Slightly faster on ordinary round trips**, repeatably - statements are prepared and reused
@@ -128,14 +128,14 @@ schema, the same queries, the same migrations. What you get for it:
 
 | Workload                                  | node-postgres | drizzle-postgrejs | speedup   |
 | ----------------------------------------- | ------------- | ----------------- | --------- |
-| point read - one row by primary key       | 0.521 ms      | 0.466 ms          | **1.12x** |
-| insert returning - six parameters         | 0.559 ms      | 0.535 ms          | **1.04x** |
-| page of 200 - nine columns, mixed types   | 1.092 ms      | 1.110 ms          | level     |
-| concurrent reads - 20 at once, pool of 10 | 2.737 ms      | 2.459 ms          | level     |
-| `int4[]` of 100k - one array column       | 28.526 ms     | 13.223 ms         | **2.16x** |
-| `bytea` of 4MB - one binary column        | 111.767 ms    | 35.113 ms         | **3.18x** |
+| point read - one row by primary key       | 0.508 ms      | 0.478 ms          | **1.06x** |
+| insert returning - six parameters         | 0.596 ms      | 0.551 ms          | **1.08x** |
+| page of 200 - nine columns, mixed types   | 1.097 ms      | 1.074 ms          | level     |
+| concurrent reads - 20 at once, pool of 10 | 1.679 ms      | 1.671 ms          | level     |
+| `int4[]` of 100k - one array column       | 25.397 ms     | 11.169 ms         | **2.27x** |
+| `bytea` of 4MB - one binary column        | 70.696 ms     | 24.415 ms         | **2.90x** |
 
-drizzle-orm 0.45.3, PostgreSQL on loopback, Node 24. Medians; how that was measured and how much
+drizzle-orm 0.45.3, postgrejs 3.11.0, PostgreSQL on loopback, Node 24. Medians; how that was measured and how much
 each row can bear are in [How the numbers were measured](#how-the-numbers-were-measured).
 
 **The gain follows the payload, not the query.** An ordinary read or write gains a little and gains
@@ -155,9 +155,9 @@ does not drift is *which* of the two won each pair, so that is counted separatel
 
 | Workload                                  | pairs | drizzle-postgrejs faster in | odds of that by luck |
 | ----------------------------------------- | ----- | --------------------------- | -------------------- |
-| point read - one row by primary key       | 101   | 75                          | < 1 in 10^5          |
-| insert returning - six parameters         | 101   | 68                          | < 1 in 10^3          |
-| page of 200 - nine columns, mixed types   | 101   | 49                          | not distinguishable  |
+| point read - one row by primary key       | 101   | 82                          | < 1 in 10^9          |
+| insert returning - six parameters         | 101   | 71                          | < 1 in 10^4          |
+| page of 200 - nine columns, mixed types   | 101   | 51                          | not distinguishable  |
 | concurrent reads - 20 at once, pool of 10 | 61    | 31                          | not distinguishable  |
 | `int4[]` of 100k - one array column       | 41    | 41                          | < 1 in 10^12         |
 | `bytea` of 4MB - one binary column        | 41    | 41                          | < 1 in 10^12         |
@@ -169,8 +169,8 @@ differences are real; it says nothing about their size, which is what the speedu
 rows say "not distinguishable" and are printed that way rather than rounded into a win.
 
 Result columns arrive in PostgreSQL's binary format and are decoded per type, where `pg` asks for
-text and parses it. On bulk that is the whole difference: a 100k-element `int4[]` costs 13.2 ms and
-1.7 MB of heap here against 28.5 ms and 65.2 MB, because the text path has to materialise the array
+text and parses it. On bulk that is the whole difference: a 100k-element `int4[]` costs 11.2 ms and
+1.7 MB of heap here against 25.4 ms and 65.1 MB, because the text path has to materialise the array
 literal as one string before it can parse it.
 
 It is also cheaper on the wire. A `bytea` in text is `\x`-prefixed hex, two characters per byte, so
@@ -180,7 +180,7 @@ PostgreJS names and caches a statement per connection - 64 by default, least-rec
 so each distinct SQL string is parsed and planned once rather than on every call. Counted from the
 backend: three queries through this driver leave one prepared statement behind, and the same three
 through `drizzle-orm/node-postgres` leave none, because `pg` prepares only a query it was given a
-name for and drizzle does not give it one. This is what the point read's 75 pairs of 101 is.
+name for and drizzle does not give it one. This is what the point read's 82 pairs of 101 is.
 
 Drizzle's own `.prepare(name)` still works as it always did - it is no longer the only way to get a
 statement prepared.
