@@ -12,10 +12,10 @@ everything above it stays the same - your schema, your queries, your migrations.
 <!-- bench:intro -->
 
 It is faster where it counts, and it holds far less memory doing it. A 100k-element array column
-comes back in 11.3 ms against 25.5 ms, peaking at 49.4 MB against 80.7 MB; a 4MB `bytea` in 23.3 ms
-against 68.3 ms, and at 0.72 MB against 48.3 MB - `pg` holds that column as hex text, twice the
+comes back in 12.0 ms against 25.8 ms, peaking at 49.4 MB against 80.7 MB; a 4MB `bytea` in 25.2 ms
+against 73.8 ms, and at 32.2 MB against 48.3 MB - `pg` holds that column as hex text, twice the
 size, off the JS heap where a heap figure alone cannot see it. Ordinary queries gain less and gain
-it repeatably: a point read is the faster of the two in 75 of 101 alternated pairs. All of it
+it repeatably: a point read is the faster of the two in 73 of 101 alternated pairs. All of it
 measured through drizzle against `drizzle-orm/node-postgres` on the same server:
 [`doc/BENCHMARKS.md`](doc/BENCHMARKS.md).
 
@@ -130,7 +130,7 @@ schema, the same queries, the same migrations. What you get for it:
 
 <!-- bench:payload -->
 
-- **Faster where the payload is large** - 2.3x on a 100k-element array column and 2.9x on a 4MB
+- **Faster where the payload is large** - 2.2x on a 100k-element array column and 2.9x on a 4MB
   `bytea`, on a fraction of the memory, because the values arrive in PostgreSQL's binary format
   rather than as text to be parsed.
 
@@ -147,12 +147,12 @@ schema, the same queries, the same migrations. What you get for it:
 
 | Scenario                                              | node-postgres | postgrejs     |           | peak memory            |
 | ----------------------------------------------------- | ------------- | ------------- | --------- | ---------------------- |
-| point read - one row by primary key                   | 0.534 ms      | **0.481 ms**  | **1.11x** | **11.5 MB** -> 12.1 MB |
-| page of 200 - nine columns, mixed types               | 1.199 ms      | **1.127 ms**  | **1.06x** | 56.7 MB -> **53.0 MB** |
-| insert returning - six parameters                     | 0.585 ms      | **0.543 ms**  | **1.08x** | **10.2 MB** -> 13.2 MB |
-| concurrent reads - 20 point reads at once, pool of 10 | 1.711 ms      | **1.633 ms**  | **1.05x** | **15.5 MB** -> 17.6 MB |
-| int4[] of 100k - one array column                     | 25.534 ms     | **11.303 ms** | **2.26x** | 80.7 MB -> **49.4 MB** |
-| bytea of 4MB - one binary column                      | 68.335 ms     | **23.335 ms** | **2.93x** | 48.3 MB -> **0.72 MB** |
+| point read - one row by primary key                   | 0.463 ms      | **0.425 ms**  | **1.09x** | **11.5 MB** -> 12.1 MB |
+| page of 200 - nine columns, mixed types               | 1.064 ms      | 1.068 ms      | level     | 57.2 MB -> **53.1 MB** |
+| insert returning - six parameters                     | 0.484 ms      | **0.470 ms**  | **1.03x** | **10.2 MB** -> 13.2 MB |
+| concurrent reads - 20 point reads at once, pool of 10 | 1.803 ms      | 1.767 ms      | level     | **15.2 MB** -> 17.5 MB |
+| int4[] of 100k - one array column                     | 25.769 ms     | **11.965 ms** | **2.15x** | 80.7 MB -> **49.4 MB** |
+| bytea of 4MB - one binary column                      | 73.839 ms     | **25.169 ms** | **2.93x** | 48.3 MB -> **32.2 MB** |
 
 `drizzle-orm` 0.45.3, `postgrejs` 3.11.0, PostgreSQL on loopback, Node 24.15.0. Medians; how that
 was measured and how much each row can bear are in [How the numbers were
@@ -179,10 +179,10 @@ does not drift is *which* of the two won each pair, so that is counted separatel
 
 | Scenario         | pairs | postgrejs faster in | odds of that by luck |
 | ---------------- | ----- | ------------------- | -------------------- |
-| point read       | 101   | 75                  | < 1 in 10^5          |
-| page of 200      | 101   | 62                  | p = 0.028            |
-| insert returning | 101   | 70                  | < 1 in 10^3          |
-| concurrent reads | 61    | 44                  | < 1 in 10^3          |
+| point read       | 101   | 73                  | < 1 in 10^5          |
+| page of 200      | 101   | 52                  | not distinguishable  |
+| insert returning | 101   | 67                  | p = 0.001            |
+| concurrent reads | 61    | 32                  | not distinguishable  |
 | int4[] of 100k   | 41    | 41                  | < 1 in 10^12         |
 | bytea of 4MB     | 41    | 41                  | < 1 in 10^12         |
 
@@ -197,8 +197,8 @@ rows say "not distinguishable" and are printed that way rather than rounded into
 <!-- bench:binary -->
 
 Result columns arrive in PostgreSQL's binary format and are decoded per type, where `pg` asks for
-text and parses it. On bulk that is the whole difference: a 100k-element `int4[]` costs 11.3 ms and
-49.4 MB here against 25.5 ms and 80.7 MB, because the text path has to materialise the array literal
+text and parses it. On bulk that is the whole difference: a 100k-element `int4[]` costs 12.0 ms and
+49.4 MB here against 25.8 ms and 80.7 MB, because the text path has to materialise the array literal
 as one string before it can parse it.
 
 <!-- /bench:binary -->
@@ -212,7 +212,7 @@ PostgreJS names and caches a statement per connection - 64 by default, least-rec
 so each distinct SQL string is parsed and planned once rather than on every call. Counted from the
 backend: three queries through this driver leave one prepared statement behind, and the same three
 through `drizzle-orm/node-postgres` leave none, because `pg` prepares only a query it was given a
-name for and drizzle does not give it one. This is what the point read's 75 pairs of 101 is.
+name for and drizzle does not give it one. This is what the point read's 73 pairs of 101 is.
 
 <!-- /bench:prepared -->
 

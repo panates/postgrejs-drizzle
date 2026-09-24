@@ -65,8 +65,8 @@ async function heapInChild(scenario, driver) {
     ['--expose-gc', HEAP_WORKER, driver, scenario.name],
     { env: process.env },
   );
-  const measured = JSON.parse(stdout);
-  return measured.peakKb;
+  const { atRestKb, perCallKb, peakKb, iterations } = JSON.parse(stdout);
+  return { atRestKb, perCallKb, peakKb, iterations };
 }
 
 const median = xs => {
@@ -132,16 +132,25 @@ async function main() {
       if (timed[names[1]] < timed[names[0]]) wins++;
     }
 
-    // and the heap, one child process per driver per pair
-    const heaps = { [names[0]]: [], [names[1]]: [] };
+    // and the memory, one child process per driver per pair
+    const churn = { [names[0]]: [], [names[1]]: [] };
+    const atRest = { [names[0]]: [], [names[1]]: [] };
+    const peaks = { [names[0]]: [], [names[1]]: [] };
+    let memoryCalls = 0;
     let heapWins = 0;
     for (let pair = 0; pair < HEAP_PAIRS; pair++) {
       const order = pair % 2 ? [names[1], names[0]] : names;
       const measured = {};
       for (const name of order)
         measured[name] = await heapInChild(scenario, name);
-      for (const name of names) heaps[name].push(measured[name]);
-      if (measured[names[1]] < measured[names[0]]) heapWins++;
+      for (const name of names) {
+        churn[name].push(measured[name].perCallKb);
+        atRest[name].push(measured[name].atRestKb);
+        peaks[name].push(measured[name].peakKb);
+        memoryCalls = measured[name].iterations;
+      }
+      if (measured[names[1]].perCallKb < measured[names[0]].perCallKb)
+        heapWins++;
     }
 
     results.push({
@@ -150,6 +159,7 @@ async function main() {
       wins,
       p: signTest(wins, pairs),
       heapPairs: HEAP_PAIRS,
+      memoryCalls,
       heapWins,
       heapP: signTest(heapWins, HEAP_PAIRS),
       rows: names.map(name => ({
@@ -157,9 +167,11 @@ async function main() {
         ms: median(samples[name]),
         lo: Math.min(...samples[name]),
         hi: Math.max(...samples[name]),
-        peakKb: median(heaps[name]),
-        peakLoKb: Math.min(...heaps[name]),
-        peakHiKb: Math.max(...heaps[name]),
+        perCallKb: median(churn[name]),
+        perCallLoKb: Math.min(...churn[name]),
+        perCallHiKb: Math.max(...churn[name]),
+        atRestKb: median(atRest[name]),
+        peakKb: median(peaks[name]),
       })),
     });
   }
@@ -196,7 +208,17 @@ async function main() {
         measuredAt: new Date().toISOString(),
         versions,
         scenarios: results.map(
-          ({ scenario, pairs, wins, p, heapPairs, heapWins, heapP, rows }) => ({
+          ({
+            scenario,
+            pairs,
+            wins,
+            p,
+            heapPairs,
+            memoryCalls,
+            heapWins,
+            heapP,
+            rows,
+          }) => ({
             name: scenario.name,
             note: scenario.note,
             iters: scenario.iters,
@@ -204,6 +226,7 @@ async function main() {
             wins,
             p,
             heapPairs,
+            memoryCalls,
             heapWins,
             heapP,
             rows,
@@ -240,12 +263,13 @@ async function main() {
         `  ${r.name.padEnd(15)} ${r.ms.toFixed(3).padStart(9)} ms/op  ` +
           `${(slowest / r.ms).toFixed(2)}x  ` +
           `spread ${r.lo.toFixed(3)}-${r.hi.toFixed(3)}  ` +
-          `peak mem ${r.peakKb.toFixed(0).padStart(7)} KB ` +
-          `(${r.peakLoKb.toFixed(0)}-${r.peakHiKb.toFixed(0)})`,
+          `${r.perCallKb.toFixed(1).padStart(6)} KB/call ` +
+          `(${r.perCallLoKb.toFixed(1)}-${r.perCallHiKb.toFixed(1)}), ` +
+          `at rest ${(r.atRestKb / 1024).toFixed(1)} MB`,
       );
     console.log(`  -> postgrejs won ${wins} of ${pairs} pairs, ${odds(p)}`);
     console.log(
-      `     memory: postgrejs lower in ${heapWins} of ${heapPairs}, ${odds(heapP)}`,
+      `     allocation: postgrejs lower in ${heapWins} of ${heapPairs}, ${odds(heapP)}`,
     );
     console.log();
   }

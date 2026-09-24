@@ -37,7 +37,13 @@ const warmup = Math.min(scenario.iters * 4, 60);
 for (let i = 0; i < warmup; i++) await scenario.run(db, i);
 
 globalThis.gc();
-const baseline = process.memoryUsage().heapUsed;
+globalThis.gc();
+// What the driver holds at rest, warm: its pool, its buffers, its
+// prepared statements. Separate from what a batch churns through, and the
+// two answer different questions - "how much does it need" against "how
+// much garbage does a call make".
+const atRest = process.memoryUsage();
+const baseline = atRest.heapUsed;
 const externalBaseline = process.memoryUsage().external;
 let peak = 0;
 let peakHeapOnly = 0;
@@ -63,20 +69,24 @@ clearInterval(poll);
 globalThis.gc();
 const retained = process.memoryUsage().heapUsed - baseline;
 
-console.log(
-  JSON.stringify({
-    driver: which,
-    scenario: name,
-    iterations,
-    // what the batch ever held at once - heap and off-heap together - and
-    // what it did not give back
-    peakKb: peak / 1024,
-    peakHeapOnlyKb: peakHeapOnly / 1024,
-    peakExternalOnlyKb: peakExternalOnly / 1024,
-    retainedKb: retained / 1024,
-    rssKb: process.memoryUsage().rss / 1024,
-  }),
-);
+const measured = {
+  driver: which,
+  scenario: name,
+  iterations,
+  // what the batch ever held at once - heap and off-heap together - and
+  // what it did not give back
+  atRestKb: (atRest.heapUsed + atRest.external) / 1024,
+  perCallKb: 0, // filled in below
+  peakKb: peak / 1024,
+  peakHeapOnlyKb: peakHeapOnly / 1024,
+  peakExternalOnlyKb: peakExternalOnly / 1024,
+  retainedKb: retained / 1024,
+  rssKb: process.memoryUsage().rss / 1024,
+};
+// the peak above a warm baseline is allocation churn, and it scales with
+// the batch, so it only means something per call
+measured.perCallKb = measured.peakKb / iterations;
+console.log(JSON.stringify(measured));
 
 await close();
 process.exit(0);

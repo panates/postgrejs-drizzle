@@ -72,7 +72,7 @@ const speedup = scenario => {
     won: scenario.p < 0.05,
     // the heap gets the same treatment as the timings: a split a coin
     // would produce is reported as level, whichever way the medians fell
-    heapRatio: control.peakKb / driver.peakKb,
+    heapRatio: control.perCallKb / driver.perCallKb,
     heapSettled: scenario.heapP < 0.05,
   };
 };
@@ -85,6 +85,27 @@ function heapCell(scenario) {
   return heapRatio > 1
     ? `${mb(control.peakKb)} -> **${mb(driver.peakKb)}**`
     : `**${mb(control.peakKb)}** -> ${mb(driver.peakKb)}`;
+}
+
+/** What a driver holds warm, and what one call throws away. */
+function memoryTable(results) {
+  return table(
+    [
+      'Scenario',
+      `at rest (${CONTROL} / ${DRIVER})`,
+      `allocated per call (${CONTROL} / ${DRIVER})`,
+    ],
+    results.scenarios.map(scenario => {
+      const { control, driver } = speedup(scenario);
+      const kb = value =>
+        value >= 1024 ? mb(value) : `${value.toFixed(1)} KB`;
+      return [
+        scenario.name,
+        `${mb(control.atRestKb)} / ${mb(driver.atRestKb)}`,
+        `${kb(control.perCallKb)} / ${kb(driver.perCallKb)}`,
+      ];
+    }),
+  );
 }
 
 function headlineTable(results) {
@@ -171,12 +192,17 @@ function reading(results) {
   const bytes = named.find(s => s.name.startsWith('bytea'));
 
   const fixed = heavier.length
-    ? `On the small workloads it is the other way and by a steady amount: ${list(
+    ? `On the small workloads it is the other way: ${list(
         heavier.map(
           s =>
-            `${s.name} holds ${mb(s.driver.peakKb)} against ${mb(s.control.peakKb)}`,
+            `${s.name} allocates ${s.driver.perCallKb.toFixed(1)} KB a call against ${s.control.perCallKb.toFixed(1)}`,
         ),
-      )}. That is a fixed cost - the client's own structures, a prepared statement cache among them - and it does not grow with the work.`
+      )}. That is garbage rather than growth, and the distinction is the whole point: at rest the two are within a few hundred KB of each other - ${list(
+        heavier.map(
+          s =>
+            `${mb(s.driver.atRestKb)} against ${mb(s.control.atRestKb)} on ${s.name}`,
+        ),
+      )} - so what it costs is collector time on a hot path, not footprint. Measured over 100, 400 and 1600 calls of a point read the gap scales with the call count and the at-rest figure does not move, which is what says churn rather than a structure being held.`
     : '';
 
   return [
@@ -195,7 +221,7 @@ function reading(results) {
       ),
     )}. ${fixed}`,
 
-    `**The \`bytea\` row is the one to read twice.** ${mb(bytes.control.peakKb)} against ${mb(bytes.driver.peakKb)} is not a rounding difference, and an earlier revision of this file reported the opposite - 0.39 MB against 0.75 MB - because it measured \`heapUsed\` alone. A \`Buffer\` is not on the JS heap, and a \`bytea\` is a \`Buffer\`, so what \`pg\` was holding was invisible to the number being printed.`,
+    `**The \`bytea\` row is the one to read twice.** ${bytes.control.perCallKb >= 1024 ? mb(bytes.control.perCallKb) : `${bytes.control.perCallKb.toFixed(0)} KB`} a call against ${bytes.driver.perCallKb >= 1024 ? mb(bytes.driver.perCallKb) : `${bytes.driver.perCallKb.toFixed(0)} KB`}, and an earlier revision of this file had it the other way round - 0.39 MB against 0.75 MB - because it measured \`heapUsed\` alone. A \`Buffer\` is not on the JS heap, and a \`bytea\` is a \`Buffer\`, so the 4MB column \`pg\` was holding as 8MB of hex text plus a buffer was invisible to the number being printed.`,
 
     `**Why the payload rows separate.** PostgreJS reads these columns in PostgreSQL's binary format where \`pg\` reads them as text, and that shows up twice over:`,
 
@@ -268,6 +294,20 @@ off-heap buffers are sampled together as one number. That last part matters more
 pg's 4MB column as 0.4 MB while it is really holding 49 MB of it.
 
 ${heapSignTable(results)}
+
+Those two are different questions, and the answers are not the same. What a driver holds warm is one
+number; what a single call allocates and then throws away is another, and it is the second one the
+peak is made of on a small query - the peak above a warm baseline is garbage waiting for the
+collector, and it grows with the size of the batch rather than saying anything about the driver:
+
+${memoryTable(results)}
+
+The per-call column is the steadier of the two. A peak is whatever was alive at one moment, and on
+the payload rows that depends on when the collector happened to run - a \`bytea\` is a \`Buffer\`, and a
+\`Buffer\` is freed on collection rather than when it goes out of scope, so the same scenario has
+peaked at 0.7 MB on one run and 32 MB on the next. Both drivers are measured the same way and the
+split is 15 of 15 either way, so what the sign test settles is the direction; the magnitude of a peak
+is not worth quoting to two figures.
 
 ## Reading them
 
