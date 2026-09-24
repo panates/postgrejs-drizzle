@@ -79,12 +79,24 @@ const speedup = scenario => {
   };
 };
 
-/** `**2.65x**`, `1.61x to \`pg\``, or `level` - for either measure. */
+/** `**2.65x**`, `1.61x to \`pg\``, or `level` - for the timings. */
 function verdict(settled, ratio) {
   if (!settled) return 'level';
   return ratio > 1
     ? `**${ratio.toFixed(2)}x**`
     : `${(1 / ratio).toFixed(2)}x to \`pg\``;
+}
+
+/**
+ * Memory reads better as a percentage than as a multiple: `-51%` says
+ * postgrejs held half again less than `node-postgres` did, `+29%` that it
+ * held more, and the sign carries which way without a phrase for it.
+ */
+function percent(settled, control, driver) {
+  if (!settled) return 'level';
+  const change = ((driver - control) / control) * 100;
+  const text = `${change > 0 ? '+' : ''}${change.toFixed(0)}%`;
+  return change < 0 ? `**${text}**` : text;
 }
 
 /** What a driver holds warm, and what one call throws away. */
@@ -133,7 +145,10 @@ function headlineTable(results) {
           bold(ms(driver.ms), won && ratio > 1),
           bold(mb(driver.peakKb), heapSettled && heapRatio > 1),
         ),
-        pair(verdict(won, ratio), verdict(heapSettled, heapRatio)),
+        pair(
+          verdict(won, ratio),
+          percent(heapSettled, control.peakKb, driver.peakKb),
+        ),
       ];
     }),
   );
@@ -338,6 +353,9 @@ ${headlineTable(results)}
 And which driver actually won, pair by pair:
 
 ${signTable(results)}
+
+The memory line of that last column is a percentage rather than a multiple, and it is postgrejs
+against \`node-postgres\`: \`-51%\` is half again less held, \`+29%\` is more.
 
 Memory is measured the same way and counted the same way - one child process per driver, so what a
 client allocates once and keeps is inside the window rather than under it, and the JS heap and the

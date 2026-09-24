@@ -146,21 +146,21 @@ schema, the same queries, the same migrations. What you get for it:
 
 <!-- bench:headline -->
 
-| Scenario                                                                  | node-postgres<br>peak memory | postgrejs<br>peak memory     |                            |
-| ------------------------------------------------------------------------- | ---------------------------- | ---------------------------- | -------------------------- |
-| point read - one row by primary key                                       | 0.510 ms<br>**11.6 MB**      | **0.473 ms**<br>12.2 MB      | **1.08x**<br>1.05x to `pg` |
-| page of 200 - nine columns, mixed types                                   | 1.030 ms<br>57.0 MB          | 1.037 ms<br>**53.4 MB**      | level<br>**1.07x**         |
-| insert returning - six parameters                                         | 0.574 ms<br>**10.2 MB**      | **0.568 ms**<br>13.2 MB      | **1.01x**<br>1.29x to `pg` |
-| concurrent reads - 20 point reads at once, pool of 10                     | 1.705 ms<br>**15.1 MB**      | 1.677 ms<br>17.7 MB          | level<br>1.18x to `pg`     |
-| int4[] of 100k, single digits - values 1-9, the width text is cheapest at | 9.961 ms<br>74.0 MB          | **8.860 ms**<br>**48.6 MB**  | **1.12x**<br>**1.52x**     |
-| int4[] of 100k, mixed widths - values 1-100000                            | 23.777 ms<br>80.7 MB         | **9.820 ms**<br>**49.4 MB**  | **2.42x**<br>**1.63x**     |
-| int4[] of 100k, full width - values that use the whole type               | 37.247 ms<br>101.0 MB        | **9.823 ms**<br>**49.4 MB**  | **3.79x**<br>**2.04x**     |
-| float8 of 5k rows - eight bytes against up to seventeen digits            | 2.151 ms<br>**60.2 MB**      | **1.757 ms**<br>66.1 MB      | **1.22x**<br>1.10x to `pg` |
-| uuid of 5k rows - sixteen bytes against thirty-six characters             | 2.134 ms<br>**63.9 MB**      | **1.997 ms**<br>69.8 MB      | **1.07x**<br>1.09x to `pg` |
-| box of 5k rows - four float8s against coordinates that use them           | 4.632 ms<br>**68.6 MB**      | **2.765 ms**<br>80.2 MB      | **1.68x**<br>1.17x to `pg` |
-| bytea of 1KB - small enough that the round trip dominates                 | 0.435 ms<br>**8.9 MB**       | **0.409 ms**<br>10.3 MB      | **1.06x**<br>1.16x to `pg` |
-| bytea of 256KB - a document or a thumbnail                                | 4.810 ms<br>74.2 MB          | **2.455 ms**<br>**33.0 MB**  | **1.96x**<br>**2.25x**     |
-| bytea of 4MB - large enough to be the whole cost                          | 70.149 ms<br>48.4 MB         | **31.323 ms**<br>**15.2 MB** | **2.24x**<br>**3.18x**     |
+| Scenario                                                                  | node-postgres<br>peak memory | postgrejs<br>peak memory     |                       |
+| ------------------------------------------------------------------------- | ---------------------------- | ---------------------------- | --------------------- |
+| point read - one row by primary key                                       | 0.510 ms<br>**11.6 MB**      | **0.473 ms**<br>12.2 MB      | **1.08x**<br>+5%      |
+| page of 200 - nine columns, mixed types                                   | 1.030 ms<br>57.0 MB          | 1.037 ms<br>**53.4 MB**      | level<br>**-6%**      |
+| insert returning - six parameters                                         | 0.574 ms<br>**10.2 MB**      | **0.568 ms**<br>13.2 MB      | **1.01x**<br>+29%     |
+| concurrent reads - 20 point reads at once, pool of 10                     | 1.705 ms<br>**15.1 MB**      | 1.677 ms<br>17.7 MB          | level<br>+18%         |
+| int4[] of 100k, single digits - values 1-9, the width text is cheapest at | 9.961 ms<br>74.0 MB          | **8.860 ms**<br>**48.6 MB**  | **1.12x**<br>**-34%** |
+| int4[] of 100k, mixed widths - values 1-100000                            | 23.777 ms<br>80.7 MB         | **9.820 ms**<br>**49.4 MB**  | **2.42x**<br>**-39%** |
+| int4[] of 100k, full width - values that use the whole type               | 37.247 ms<br>101.0 MB        | **9.823 ms**<br>**49.4 MB**  | **3.79x**<br>**-51%** |
+| float8 of 5k rows - eight bytes against up to seventeen digits            | 2.151 ms<br>**60.2 MB**      | **1.757 ms**<br>66.1 MB      | **1.22x**<br>+10%     |
+| uuid of 5k rows - sixteen bytes against thirty-six characters             | 2.134 ms<br>**63.9 MB**      | **1.997 ms**<br>69.8 MB      | **1.07x**<br>+9%      |
+| box of 5k rows - four float8s against coordinates that use them           | 4.632 ms<br>**68.6 MB**      | **2.765 ms**<br>80.2 MB      | **1.68x**<br>+17%     |
+| bytea of 1KB - small enough that the round trip dominates                 | 0.435 ms<br>**8.9 MB**       | **0.409 ms**<br>10.3 MB      | **1.06x**<br>+16%     |
+| bytea of 256KB - a document or a thumbnail                                | 4.810 ms<br>74.2 MB          | **2.455 ms**<br>**33.0 MB**  | **1.96x**<br>**-56%** |
+| bytea of 4MB - large enough to be the whole cost                          | 70.149 ms<br>48.4 MB         | **31.323 ms**<br>**15.2 MB** | **2.24x**<br>**-69%** |
 
 `drizzle-orm` 0.45.3, `postgrejs` 3.11.0, PostgreSQL on loopback, Node 24.15.0. Medians; how that
 was measured and how much each row can bear are in [How the numbers were
