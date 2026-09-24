@@ -70,12 +70,26 @@ const speedup = scenario => {
     driver,
     ratio: control.ms / driver.ms,
     won: scenario.p < 0.05,
+    // the heap gets the same treatment as the timings: a split a coin
+    // would produce is reported as level, whichever way the medians fell
+    heapRatio: control.peakKb / driver.peakKb,
+    heapSettled: scenario.heapP < 0.05,
   };
 };
 
+/** `63.6 MB -> 1.7 MB`, or the same with nothing claimed about it. */
+function heapCell(scenario) {
+  const { control, driver, heapSettled, heapRatio } = speedup(scenario);
+  if (!heapSettled)
+    return `${mb(control.peakKb)} -> ${mb(driver.peakKb)} (level)`;
+  return heapRatio > 1
+    ? `${mb(control.peakKb)} -> **${mb(driver.peakKb)}**`
+    : `**${mb(control.peakKb)}** -> ${mb(driver.peakKb)}`;
+}
+
 function headlineTable(results) {
   return table(
-    ['Scenario', CONTROL, DRIVER, '', 'peak heap'],
+    ['Scenario', CONTROL, DRIVER, '', 'peak memory'],
     results.scenarios.map(scenario => {
       const { control, driver, ratio, won } = speedup(scenario);
       return [
@@ -83,7 +97,7 @@ function headlineTable(results) {
         ms(control.ms),
         bold(ms(driver.ms), won && ratio > 1),
         won && ratio > 1 ? `**${ratio.toFixed(2)}x**` : 'level',
-        `${mb(control.peakKb)} -> ${bold(mb(driver.peakKb), driver.peakKb < control.peakKb / 2)}`,
+        heapCell(scenario),
       ];
     }),
   );
@@ -101,6 +115,18 @@ function signTable(results) {
   );
 }
 
+function heapSignTable(results) {
+  return table(
+    ['Scenario', 'pairs', `${DRIVER} lower in`, 'odds of that by luck'],
+    results.scenarios.map(scenario => [
+      scenario.name,
+      scenario.heapPairs,
+      scenario.heapWins,
+      odds(scenario.heapP),
+    ]),
+  );
+}
+
 /** A figure the prose quotes, so the prose is generated too. */
 function figures(results) {
   const by = name => results.scenarios.find(s => s.name.startsWith(name));
@@ -110,6 +136,8 @@ function figures(results) {
   return {
     bytesDriverMs: bytes.driver.ms.toFixed(1),
     bytesControlMs: bytes.control.ms.toFixed(1),
+    bytesDriverHeap: mb(bytes.driver.peakKb),
+    bytesControlHeap: mb(bytes.control.peakKb),
     arrayRatio: array.ratio.toFixed(1),
     bytesRatio: bytes.ratio.toFixed(1),
     arrayDriverMs: array.driver.ms.toFixed(1),
@@ -121,8 +149,72 @@ function figures(results) {
   };
 }
 
+/** A list, in prose: `a`, `a and b`, `a, b and c`. */
+const list = items =>
+  items.length <= 1
+    ? (items[0] ?? '')
+    : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`;
+
+/**
+ * The paragraphs that say what the tables mean. Generated, because each
+ * one makes a claim the next run can overturn - "level" became a win on
+ * two scenarios the first time the heap measurement was fixed.
+ */
+function reading(results) {
+  const named = results.scenarios.map(s => ({ ...s, ...speedup(s) }));
+  const faster = named.filter(s => s.won && s.ratio > 1);
+  const levelSpeed = named.filter(s => !s.won);
+  const leaner = named.filter(s => s.heapSettled && s.heapRatio > 1);
+  const heavier = named.filter(s => s.heapSettled && s.heapRatio < 1);
+  const payload = named.filter(s => s.ratio > 1.5);
+  const array = named.find(s => s.name.startsWith('int4[]'));
+  const bytes = named.find(s => s.name.startsWith('bytea'));
+
+  const fixed = heavier.length
+    ? `On the small workloads it is the other way and by a steady amount: ${list(
+        heavier.map(
+          s =>
+            `${s.name} holds ${mb(s.driver.peakKb)} against ${mb(s.control.peakKb)}`,
+        ),
+      )}. That is a fixed cost - the client's own structures, a prepared statement cache among them - and it does not grow with the work.`
+    : '';
+
+  return [
+    `**Speed follows the payload.** ${list(
+      payload.map(s => `${s.name} is ${s.ratio.toFixed(1)}x`),
+    )}, on ${payload[0]?.pairs ?? 0} pairs of ${payload[0]?.pairs ?? 0} each. On the ordinary shapes the gap is small and, ${
+      faster.length === named.length
+        ? 'on every one of them, repeatable'
+        : `on ${list(faster.filter(s => s.ratio <= 1.5).map(s => s.name))}, repeatable`
+    }${levelSpeed.length ? `; ${list(levelSpeed.map(s => s.name))} ${levelSpeed.length > 1 ? 'are' : 'is'} not distinguishable from a coin` : ''}.`,
+
+    `**Memory divides the same way, and it is worth being exact about.** Where the payload is large PostgreJS holds far less of it: ${list(
+      leaner.map(
+        s =>
+          `${s.name} peaks at ${mb(s.driver.peakKb)} against ${mb(s.control.peakKb)}`,
+      ),
+    )}. ${fixed}`,
+
+    `**The \`bytea\` row is the one to read twice.** ${mb(bytes.control.peakKb)} against ${mb(bytes.driver.peakKb)} is not a rounding difference, and an earlier revision of this file reported the opposite - 0.39 MB against 0.75 MB - because it measured \`heapUsed\` alone. A \`Buffer\` is not on the JS heap, and a \`bytea\` is a \`Buffer\`, so what \`pg\` was holding was invisible to the number being printed.`,
+
+    `**Why the payload rows separate.** PostgreJS reads these columns in PostgreSQL's binary format where \`pg\` reads them as text, and that shows up twice over:`,
+
+    `- On the wire. A \`bytea\` costs exactly twice as much as text - \`\\x\`-prefixed hex, two characters per byte - so the 4MB column is 4MB rather than 8MB. An \`int4[]\` depends on the values: binary spends a fixed 8 bytes per element where text spends one byte per digit, so full-width integers favour binary.\n- In memory. The 100k-element array peaks at ${mb(array.driver.peakKb)} against ${mb(array.control.peakKb)} - the text path materialises the whole array literal as a string and parses it, where the binary path reads elements out of the buffer it already has.`,
+
+    `**Where it reaches you.** Through drizzle, these are \`bytea\` columns, array columns, and anything large in a raw \`db.execute()\`. A schema of text, integers and timestamps sees the top of that table and not the bottom.`,
+  ]
+    .map(paragraph =>
+      paragraph.startsWith('- ')
+        ? paragraph
+            .split('\n')
+            .map(line => wrap(line, 98).replace(/\n/g, '\n  '))
+            .join('\n')
+        : wrap(paragraph),
+    )
+    .join('\n\n');
+}
+
 function document(results) {
-  const f = figures(results);
   const { versions } = results;
   return `# The same drizzle calls, on both drivers
 
@@ -169,34 +261,17 @@ And which driver actually won, pair by pair:
 
 ${signTable(results)}
 
+Memory is measured the same way and counted the same way - one child process per driver, so what a
+client allocates once and keeps is inside the window rather than under it, and the JS heap and the
+off-heap buffers are sampled together as one number. That last part matters more than it sounds: a
+\`bytea\` arrives as a \`Buffer\`, which lives outside the JS heap entirely, so \`heapUsed\` alone reads
+pg's 4MB column as 0.4 MB while it is really holding 49 MB of it.
+
+${heapSignTable(results)}
+
 ## Reading them
 
-**Round trips are slightly cheaper and it is repeatable.** A point read wins ${f.pointWins} pairs of
-${f.pointPairs} - small in absolute terms, and not luck. A statement is parsed once per connection
-here and executed by name after that, which is the part of a short query there is anything to save
-on.
-
-**A page of rows and a burst of concurrent reads are level.** Neither split is distinguishable from a
-coin. The concurrency one is worth naming: PostgreJS can put several statements on one connection at
-a time, and this driver does not ask it to - every query gets a connection to itself, as under
-\`pg\`.
-The headroom is real and unclaimed.
-
-**The separation is on payload.** ${f.arrayRatio}x and ${f.bytesRatio}x, 41 pairs of 41 each.
-PostgreJS reads these columns in PostgreSQL's binary format where \`pg\` reads them as text, and that
-shows up twice over:
-
-- On the wire. A \`bytea\` costs exactly twice as much as text - \`\\x\`-prefixed hex, two characters per
-  byte - so the 4MB column is 4MB rather than 8MB. An \`int4[]\` depends on the values: binary spends a
-  fixed 8 bytes per element where text spends one byte per digit, so full-width integers favour
-  binary.
-- In the heap. The 100k-element array peaks at ${f.arrayDriverHeap} against ${f.arrayControlHeap} -
-  the text path materialises the whole array literal as a string and parses it, where the binary path
-  reads elements out of the buffer it already has.
-
-**Where it reaches you.** Through drizzle, these are \`bytea\` columns, array columns, and anything
-large in a raw \`db.execute()\`. A schema of text, integers and timestamps sees the top of that table
-and not the bottom.
+${reading(results)}
 
 The client underneath has its own suite against \`pg\` and \`postgres.js\`, on more scenarios than this -
 COPY, cursors, pooling, pipelining - in
@@ -236,19 +311,21 @@ readme = replaceRegion(readme, 'signtest', signTable(results));
 readme = replaceRegion(
   readme,
   'intro',
-  wrap(`It is faster, and it holds far less while being so. A 100k-element array column comes back in
-${f.arrayDriverMs} ms against ${f.arrayControlMs} ms and peaks at ${f.arrayDriverHeap} of heap against
-${f.arrayControlHeap}; a 4MB \`bytea\` in ${f.bytesDriverMs} ms against ${f.bytesControlMs} ms. Ordinary queries
-gain less and gain it repeatably - a point read is the faster of the two in ${f.pointWins} of ${f.pointPairs}
-alternated pairs. All of it measured through drizzle against \`drizzle-orm/node-postgres\` on the same
-server: [\`doc/BENCHMARKS.md\`](doc/BENCHMARKS.md).`),
+  wrap(`It is faster where it counts, and it holds far less memory doing it. A 100k-element array
+column comes back in ${f.arrayDriverMs} ms against ${f.arrayControlMs} ms, peaking at ${f.arrayDriverHeap} against
+${f.arrayControlHeap}; a 4MB \`bytea\` in ${f.bytesDriverMs} ms against ${f.bytesControlMs} ms, and at
+${f.bytesDriverHeap} against ${f.bytesControlHeap} - \`pg\` holds that column as hex text, twice the
+size, off the JS heap where a heap figure alone cannot see it. Ordinary queries gain less and gain it
+repeatably: a point read is the faster of the two in ${f.pointWins} of ${f.pointPairs} alternated pairs.
+All of it measured through drizzle against \`drizzle-orm/node-postgres\` on the same server:
+[\`doc/BENCHMARKS.md\`](doc/BENCHMARKS.md).`),
 );
 readme = replaceRegion(
   readme,
   'binary',
   wrap(`Result columns arrive in PostgreSQL's binary format and are decoded per type, where \`pg\` asks for
 text and parses it. On bulk that is the whole difference: a 100k-element \`int4[]\` costs
-${f.arrayDriverMs} ms and ${f.arrayDriverHeap} of heap here against ${f.arrayControlMs} ms and
+${f.arrayDriverMs} ms and ${f.arrayDriverHeap} here against ${f.arrayControlMs} ms and
 ${f.arrayControlHeap}, because the text path has to materialise the array literal as one string
 before it can parse it.`),
 );
@@ -266,7 +343,7 @@ readme = replaceRegion(
   readme,
   'payload',
   wrap(
-    `- **Faster where the payload is large** - ${f.arrayRatio}x on a 100k-element array column and ${f.bytesRatio}x on a 4MB \`bytea\`, on a fraction of the heap, because the values arrive in PostgreSQL's binary format rather than as text to be parsed.`,
+    `- **Faster where the payload is large** - ${f.arrayRatio}x on a 100k-element array column and ${f.bytesRatio}x on a 4MB \`bytea\`, on a fraction of the memory, because the values arrive in PostgreSQL's binary format rather than as text to be parsed.`,
     98,
   ).replace(/\n/g, '\n  '),
 );

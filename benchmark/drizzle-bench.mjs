@@ -12,12 +12,22 @@
  *   node --expose-gc benchmark/drizzle-bench.mjs
  *   node --expose-gc benchmark/drizzle-bench.mjs --repeats=7 --scenario=page
  */
+import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { sql } from 'drizzle-orm';
-import { drizzle as drizzleNodePg } from 'drizzle-orm/node-postgres';
+import { promisify } from 'node:util';
 import { Pool as PgPool } from 'pg';
-import { Pool as PgjsPool } from 'postgrejs';
-import { drizzle as drizzlePgjs } from '../build/index.js';
+import {
+  CONN,
+  CONTROL,
+  DDL,
+  DRIVER,
+  openDatabases,
+  scenariosMatching,
+  SCHEMA,
+} from './scenarios.mjs';
+
+const run = promisify(execFile);
+const HEAP_WORKER = new URL('./heap-worker.mjs', import.meta.url).pathname;
 
 const RESULTS_FILE = new URL('./results/latest.json', import.meta.url);
 
@@ -27,106 +37,8 @@ const arg = (name, fallback) => {
 };
 
 const PAIRS = Number(arg('pairs', 0)); // 0: each scenario's own
+const HEAP_PAIRS = Number(arg('heap-pairs', 15));
 const ONLY = arg('scenario', 'all');
-const SCHEMA = 'bench_drizzle';
-const SEED_ROWS = 5000;
-
-const CONN = {
-  host: process.env.PGHOST ?? '127.0.0.1',
-  port: Number(process.env.PGPORT ?? 5432),
-  user: process.env.PGUSER ?? 'postgres',
-  password: process.env.PGPASSWORD ?? 'postgres',
-  database: process.env.PGDATABASE ?? 'postgres',
-};
-
-const DDL = [
-  `create schema if not exists ${SCHEMA}`,
-  `drop table if exists ${SCHEMA}.rows`,
-  `create table ${SCHEMA}.rows (
-     id serial primary key,
-     name text not null,
-     email text not null,
-     age integer,
-     balance numeric(14, 2),
-     created timestamptz not null default now(),
-     tags text[],
-     meta jsonb,
-     active boolean not null default true
-   )`,
-  `insert into ${SCHEMA}.rows (name, email, age, balance, tags, meta)
-     select 'name ' || i, 'user' || i || '@example.com', (i % 80) + 18,
-            (i % 100000)::numeric / 100, array['a', 'b', 'c'],
-            jsonb_build_object('i', i, 'nested', jsonb_build_object('k', 'v'))
-     from generate_series(1, ${SEED_ROWS}) as i`,
-];
-
-/** Each one is a single drizzle call, the way a caller would write it. */
-const SCENARIOS = [
-  {
-    name: 'point read',
-    note: 'one row by primary key',
-    iters: 50,
-    pairs: 101,
-    run: (db, i) =>
-      db.execute(
-        sql`select * from ${sql.raw(SCHEMA)}.rows where id = ${(i % SEED_ROWS) + 1}`,
-      ),
-  },
-  {
-    name: 'page of 200',
-    note: 'nine columns, mixed types',
-    iters: 20,
-    pairs: 101,
-    run: (db, i) =>
-      db.execute(
-        sql`select * from ${sql.raw(SCHEMA)}.rows order by id offset ${(i % 10) * 200} limit 200`,
-      ),
-  },
-  {
-    name: 'insert returning',
-    note: 'six parameters',
-    iters: 50,
-    pairs: 101,
-    run: (db, i) =>
-      db.execute(
-        sql`insert into ${sql.raw(SCHEMA)}.rows (name, email, age, balance, tags, meta)
-            values (${'n' + i}, ${'e' + i + '@example.com'}, ${(i % 60) + 18},
-                    ${'12.34'}, ${'{a,b}'}, ${'{"i":1}'})
-            returning id`,
-      ),
-  },
-  {
-    name: 'concurrent reads',
-    note: '20 point reads at once, pool of 10',
-    iters: 4,
-    pairs: 61,
-    pooled: true,
-    run: (db, i) =>
-      Promise.all(
-        Array.from({ length: 20 }, (_, k) =>
-          db.execute(
-            sql`select * from ${sql.raw(SCHEMA)}.rows where id = ${((i * 20 + k) % SEED_ROWS) + 1}`,
-          ),
-        ),
-      ),
-  },
-  {
-    name: 'int4[] of 100k',
-    note: 'one array column',
-    iters: 3,
-    pairs: 41,
-    run: db =>
-      db.execute(sql`select array(select generate_series(1, 100000)) as v`),
-  },
-  {
-    name: 'bytea of 4MB',
-    note: 'one binary column',
-    iters: 3,
-    pairs: 41,
-    run: db => db.execute(sql`select repeat('x', 4194304)::bytea as v`),
-  },
-];
-
 /**
  * One timed batch. Nothing is sampled while it runs: polling
  * `process.memoryUsage()` inside the timed window costs more than the
@@ -140,20 +52,21 @@ async function timedBatch(scenario, db) {
 }
 
 /**
- * The most `heapUsed` rose above a forced-GC baseline while the same batch
- * ran, polled. Run on its own, never against the clock.
+ * Peak heap for one driver, measured in a process of its own.
+ *
+ * In-process measurement cannot see what a client allocates once and
+ * keeps, because the baseline is taken with both of them already up. A
+ * child per driver - which is how postgrejs's own suite does it - puts
+ * the whole cost inside the window.
  */
-async function heapBatch(scenario, db) {
-  let peak = 0;
-  globalThis.gc?.();
-  const base = process.memoryUsage().heapUsed;
-  const poll = setInterval(() => {
-    const delta = process.memoryUsage().heapUsed - base;
-    if (delta > peak) peak = delta;
-  }, 5);
-  for (let i = 0; i < scenario.iters; i++) await scenario.run(db, i);
-  clearInterval(poll);
-  return peak / 1024;
+async function heapInChild(scenario, driver) {
+  const { stdout } = await run(
+    process.execPath,
+    ['--expose-gc', HEAP_WORKER, driver, scenario.name],
+    { env: process.env },
+  );
+  const measured = JSON.parse(stdout);
+  return measured.peakKb;
 }
 
 const median = xs => {
@@ -189,28 +102,16 @@ function odds(p) {
 }
 
 async function main() {
-  const pgPool = new PgPool({ ...CONN, max: 1 });
-  const jsPool = new PgjsPool({ ...CONN, pool: { max: 1 } });
-  const pgPoolN = new PgPool({ ...CONN, max: 10 });
-  const jsPoolN = new PgjsPool({ ...CONN, pool: { max: 10 } });
-  const dbs = {
-    'node-postgres': drizzleNodePg(pgPool, { logger: false }),
-    postgrejs: drizzlePgjs(jsPool, { logger: false }),
-  };
-  // the same two drivers over a pool of ten, for the concurrent scenario
-  const pooled = {
-    'node-postgres': drizzleNodePg(pgPoolN, { logger: false }),
-    postgrejs: drizzlePgjs(jsPoolN, { logger: false }),
-  };
+  const { dbs, close } = openDatabases(false);
+  const { dbs: pooled, close: closePooled } = openDatabases(true);
   const dbFor = (scenario, name) =>
     scenario.pooled ? pooled[name] : dbs[name];
 
+  const pgPool = new PgPool({ ...CONN, max: 1 });
   for (const statement of DDL) await pgPool.query(statement);
 
-  const scenarios = SCENARIOS.filter(
-    s => ONLY === 'all' || s.name.replaceAll(' ', '-').includes(ONLY),
-  );
-  const names = Object.keys(dbs);
+  const scenarios = scenariosMatching(ONLY);
+  const names = [CONTROL, DRIVER];
   const results = [];
 
   for (const scenario of scenarios) {
@@ -220,7 +121,6 @@ async function main() {
         await scenario.run(dbFor(scenario, name), i);
     }
     const samples = { [names[0]]: [], [names[1]]: [] };
-    const heaps = { [names[0]]: [], [names[1]]: [] };
     let wins = 0;
     for (let pair = 0; pair < pairs; pair++) {
       // swap the order every pair, so neither driver always runs first
@@ -230,31 +130,45 @@ async function main() {
         timed[name] = await timedBatch(scenario, dbFor(scenario, name));
       for (const name of names) samples[name].push(timed[name]);
       if (timed[names[1]] < timed[names[0]]) wins++;
-      // heap on its own pass, and only a few times - it is the slower one
-      if (pair % Math.ceil(pairs / 5) === 0)
-        for (const name of order)
-          heaps[name].push(await heapBatch(scenario, dbFor(scenario, name)));
     }
+
+    // and the heap, one child process per driver per pair
+    const heaps = { [names[0]]: [], [names[1]]: [] };
+    let heapWins = 0;
+    for (let pair = 0; pair < HEAP_PAIRS; pair++) {
+      const order = pair % 2 ? [names[1], names[0]] : names;
+      const measured = {};
+      for (const name of order)
+        measured[name] = await heapInChild(scenario, name);
+      for (const name of names) heaps[name].push(measured[name]);
+      if (measured[names[1]] < measured[names[0]]) heapWins++;
+    }
+
     results.push({
       scenario,
       pairs,
       wins,
       p: signTest(wins, pairs),
+      heapPairs: HEAP_PAIRS,
+      heapWins,
+      heapP: signTest(heapWins, HEAP_PAIRS),
       rows: names.map(name => ({
         name,
         ms: median(samples[name]),
         lo: Math.min(...samples[name]),
         hi: Math.max(...samples[name]),
         peakKb: median(heaps[name]),
+        peakLoKb: Math.min(...heaps[name]),
+        peakHiKb: Math.max(...heaps[name]),
       })),
     });
   }
 
+  await close();
+  await closePooled();
+
   await pgPool.query(`drop schema ${SCHEMA} cascade`);
   await pgPool.end();
-  await jsPool.close(true);
-  await pgPoolN.end();
-  await jsPoolN.close(true);
 
   // read off disk rather than imported: drizzle-orm's `exports` map does
   // not expose its own package.json, and an import of it throws
@@ -281,15 +195,20 @@ async function main() {
       {
         measuredAt: new Date().toISOString(),
         versions,
-        scenarios: results.map(({ scenario, pairs, wins, p, rows }) => ({
-          name: scenario.name,
-          note: scenario.note,
-          iters: scenario.iters,
-          pairs,
-          wins,
-          p,
-          rows,
-        })),
+        scenarios: results.map(
+          ({ scenario, pairs, wins, p, heapPairs, heapWins, heapP, rows }) => ({
+            name: scenario.name,
+            note: scenario.note,
+            iters: scenario.iters,
+            pairs,
+            wins,
+            p,
+            heapPairs,
+            heapWins,
+            heapP,
+            rows,
+          }),
+        ),
       },
       null,
       2,
@@ -302,7 +221,16 @@ async function main() {
   console.log(
     `node ${versions.node}, postgrejs ${versions.postgrejs}, pg ${versions.pg}\n`,
   );
-  for (const { scenario, rows, pairs, wins, p } of results) {
+  for (const {
+    scenario,
+    rows,
+    pairs,
+    wins,
+    p,
+    heapPairs,
+    heapWins,
+    heapP,
+  } of results) {
     console.log(
       `${scenario.name} - ${scenario.note} (${scenario.iters} calls per timed unit, ${pairs} pairs)`,
     );
@@ -312,9 +240,13 @@ async function main() {
         `  ${r.name.padEnd(15)} ${r.ms.toFixed(3).padStart(9)} ms/op  ` +
           `${(slowest / r.ms).toFixed(2)}x  ` +
           `spread ${r.lo.toFixed(3)}-${r.hi.toFixed(3)}  ` +
-          `peak heap ${r.peakKb.toFixed(0).padStart(7)} KB`,
+          `peak mem ${r.peakKb.toFixed(0).padStart(7)} KB ` +
+          `(${r.peakLoKb.toFixed(0)}-${r.peakHiKb.toFixed(0)})`,
       );
     console.log(`  -> postgrejs won ${wins} of ${pairs} pairs, ${odds(p)}`);
+    console.log(
+      `     memory: postgrejs lower in ${heapWins} of ${heapPairs}, ${odds(heapP)}`,
+    );
     console.log();
   }
   console.log(

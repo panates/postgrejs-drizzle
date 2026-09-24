@@ -38,50 +38,69 @@ forced-GC baseline while a unit ran, so it needs `--expose-gc` to mean anything.
 Node v24.15.0, `postgrejs` 3.11.0, `pg` 8.23.0, `drizzle-orm` 0.45.3, PostgreSQL on loopback,
 medians per call.
 
-| Scenario                                              | node-postgres | postgrejs     |           | peak heap             |
-| ----------------------------------------------------- | ------------- | ------------- | --------- | --------------------- |
-| point read - one row by primary key                   | 0.574 ms      | **0.524 ms**  | **1.10x** | 1.0 MB -> 1.1 MB      |
-| page of 200 - nine columns, mixed types               | 1.145 ms      | 1.134 ms      | level     | 7.0 MB -> 5.1 MB      |
-| insert returning - six parameters                     | 0.678 ms      | **0.597 ms**  | **1.14x** | 1.0 MB -> 1.3 MB      |
-| concurrent reads - 20 point reads at once, pool of 10 | 1.941 ms      | 1.928 ms      | level     | 0.75 MB -> 1.2 MB     |
-| int4[] of 100k - one array column                     | 27.300 ms     | **12.247 ms** | **2.23x** | 63.6 MB -> **1.7 MB** |
-| bytea of 4MB - one binary column                      | 69.479 ms     | **22.982 ms** | **3.02x** | 0.27 MB -> 0.16 MB    |
+| Scenario                                              | node-postgres | postgrejs     |           | peak memory            |
+| ----------------------------------------------------- | ------------- | ------------- | --------- | ---------------------- |
+| point read - one row by primary key                   | 0.534 ms      | **0.481 ms**  | **1.11x** | **11.5 MB** -> 12.1 MB |
+| page of 200 - nine columns, mixed types               | 1.199 ms      | **1.127 ms**  | **1.06x** | 56.7 MB -> **53.0 MB** |
+| insert returning - six parameters                     | 0.585 ms      | **0.543 ms**  | **1.08x** | **10.2 MB** -> 13.2 MB |
+| concurrent reads - 20 point reads at once, pool of 10 | 1.711 ms      | **1.633 ms**  | **1.05x** | **15.5 MB** -> 17.6 MB |
+| int4[] of 100k - one array column                     | 25.534 ms     | **11.303 ms** | **2.26x** | 80.7 MB -> **49.4 MB** |
+| bytea of 4MB - one binary column                      | 68.335 ms     | **23.335 ms** | **2.93x** | 48.3 MB -> **0.72 MB** |
 
 And which driver actually won, pair by pair:
 
 | Scenario         | pairs | postgrejs faster in | odds of that by luck |
 | ---------------- | ----- | ------------------- | -------------------- |
-| point read       | 101   | 72                  | < 1 in 10^4          |
-| page of 200      | 101   | 52                  | not distinguishable  |
-| insert returning | 101   | 76                  | < 1 in 10^6          |
-| concurrent reads | 61    | 33                  | not distinguishable  |
+| point read       | 101   | 75                  | < 1 in 10^5          |
+| page of 200      | 101   | 62                  | p = 0.028            |
+| insert returning | 101   | 70                  | < 1 in 10^3          |
+| concurrent reads | 61    | 44                  | < 1 in 10^3          |
 | int4[] of 100k   | 41    | 41                  | < 1 in 10^12         |
 | bytea of 4MB     | 41    | 41                  | < 1 in 10^12         |
 
+Memory is measured the same way and counted the same way - one child process per driver, so what a
+client allocates once and keeps is inside the window rather than under it, and the JS heap and the
+off-heap buffers are sampled together as one number. That last part matters more than it sounds: a
+`bytea` arrives as a `Buffer`, which lives outside the JS heap entirely, so `heapUsed` alone reads
+pg's 4MB column as 0.4 MB while it is really holding 49 MB of it.
+
+| Scenario         | pairs | postgrejs lower in | odds of that by luck |
+| ---------------- | ----- | ------------------ | -------------------- |
+| point read       | 15    | 0                  | < 1 in 10^4          |
+| page of 200      | 15    | 15                 | < 1 in 10^4          |
+| insert returning | 15    | 0                  | < 1 in 10^4          |
+| concurrent reads | 15    | 0                  | < 1 in 10^4          |
+| int4[] of 100k   | 15    | 15                 | < 1 in 10^4          |
+| bytea of 4MB     | 15    | 15                 | < 1 in 10^4          |
+
 ## Reading them
 
-**Round trips are slightly cheaper and it is repeatable.** A point read wins 72 pairs of
-101 - small in absolute terms, and not luck. A statement is parsed once per connection
-here and executed by name after that, which is the part of a short query there is anything to save
-on.
+**Speed follows the payload.** int4[] of 100k is 2.3x and bytea of 4MB is 2.9x, on 41 pairs of 41
+each. On the ordinary shapes the gap is small and, on every one of them, repeatable.
 
-**A page of rows and a burst of concurrent reads are level.** Neither split is distinguishable from a
-coin. The concurrency one is worth naming: PostgreJS can put several statements on one connection at
-a time, and this driver does not ask it to - every query gets a connection to itself, as under
-`pg`.
-The headroom is real and unclaimed.
+**Memory divides the same way, and it is worth being exact about.** Where the payload is large
+PostgreJS holds far less of it: page of 200 peaks at 53.0 MB against 56.7 MB, int4[] of 100k peaks
+at 49.4 MB against 80.7 MB and bytea of 4MB peaks at 0.72 MB against 48.3 MB. On the small workloads
+it is the other way and by a steady amount: point read holds 12.1 MB against 11.5 MB, insert
+returning holds 13.2 MB against 10.2 MB and concurrent reads holds 17.6 MB against 15.5 MB. That is
+a fixed cost - the client's own structures, a prepared statement cache among them - and it does not
+grow with the work.
 
-**The separation is on payload.** 2.2x and 3.0x, 41 pairs of 41 each.
-PostgreJS reads these columns in PostgreSQL's binary format where `pg` reads them as text, and that
-shows up twice over:
+**The `bytea` row is the one to read twice.** 48.3 MB against 0.72 MB is not a rounding difference,
+and an earlier revision of this file reported the opposite - 0.39 MB against 0.75 MB - because it
+measured `heapUsed` alone. A `Buffer` is not on the JS heap, and a `bytea` is a `Buffer`, so what
+`pg` was holding was invisible to the number being printed.
 
-- On the wire. A `bytea` costs exactly twice as much as text - `\x`-prefixed hex, two characters per
-  byte - so the 4MB column is 4MB rather than 8MB. An `int4[]` depends on the values: binary spends a
-  fixed 8 bytes per element where text spends one byte per digit, so full-width integers favour
-  binary.
-- In the heap. The 100k-element array peaks at 1.7 MB against 63.6 MB -
-  the text path materialises the whole array literal as a string and parses it, where the binary path
-  reads elements out of the buffer it already has.
+**Why the payload rows separate.** PostgreJS reads these columns in PostgreSQL's binary format where
+`pg` reads them as text, and that shows up twice over:
+
+- On the wire. A `bytea` costs exactly twice as much as text - `\x`-prefixed hex, two characters
+  per byte - so the 4MB column is 4MB rather than 8MB. An `int4[]` depends on the values: binary
+  spends a fixed 8 bytes per element where text spends one byte per digit, so full-width integers
+  favour binary.
+- In memory. The 100k-element array peaks at 49.4 MB against 80.7 MB - the text path materialises
+  the whole array literal as a string and parses it, where the binary path reads elements out of the
+  buffer it already has.
 
 **Where it reaches you.** Through drizzle, these are `bytea` columns, array columns, and anything
 large in a raw `db.execute()`. A schema of text, integers and timestamps sees the top of that table
