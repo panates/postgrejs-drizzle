@@ -20,6 +20,7 @@ import {
   CONN,
   CONTROL,
   DDL,
+  describeScenarios,
   DRIVER,
   openDatabases,
   scenariosMatching,
@@ -46,6 +47,8 @@ const ONLY = arg('scenario', 'all');
  * made an early revision of this file report a 2x that was its own.
  */
 async function timedBatch(scenario, db) {
+  // outside the clock on purpose: emptying the target is not the work
+  if (scenario.setup) await scenario.setup(db);
   const started = performance.now();
   for (let i = 0; i < scenario.iters; i++) await scenario.run(db, i);
   return (performance.now() - started) / scenario.iters;
@@ -115,9 +118,53 @@ async function main() {
   const names = [CONTROL, DRIVER];
   const results = [];
 
+  // what is about to be measured, in the SQL each scenario really sends -
+  // shortened, because one of them carries 1500 placeholders and another
+  // 100000 parameters
+  const shorten = (text, limit = 150) => {
+    const oneLine = text.replace(/\s+/g, ' ').trim();
+    return oneLine.length > limit
+      ? `${oneLine.slice(0, limit)} … (${oneLine.length} chars)`
+      : oneLine;
+  };
+  const describeParams = params => {
+    if (!params.length) return '';
+    const shown = params
+      .slice(0, 4)
+      .map(p =>
+        Array.isArray(p)
+          ? `array[${p.length}]`
+          : Buffer.isBuffer(p)
+            ? `buffer[${p.length}]`
+            : JSON.stringify(p),
+      )
+      .join(', ');
+    return `    ${params.length} param${params.length > 1 ? 's' : ''}: ${shown}${params.length > 4 ? ', …' : ''}`;
+  };
+
+  console.log('\nscenarios');
+  let group;
+  for (const { scenario, query, params, calls } of await describeScenarios(
+    scenarios,
+  )) {
+    if (scenario.group !== group) {
+      group = scenario.group;
+      console.log(`\n  ${group ?? 'Other'}`);
+    }
+    console.log(`\n    ${scenario.name} - ${scenario.note}`);
+    console.log(
+      `      ${scenario.iters} calls per timed unit, ${scenario.pairs} pairs` +
+        (calls > 1 ? `, ${calls} statements a call` : ''),
+    );
+    console.log(`      ${shorten(query)}`);
+    const described = describeParams(params);
+    if (described) console.log(`  ${described}`);
+  }
+
   for (const scenario of scenarios) {
     const pairs = PAIRS || scenario.pairs;
     for (const name of names) {
+      if (scenario.setup) await scenario.setup(dbFor(scenario, name));
       for (let i = 0; i < Math.min(scenario.iters * 4, 60); i++)
         await scenario.run(dbFor(scenario, name), i);
     }
@@ -225,6 +272,7 @@ async function main() {
           }) => ({
             name: scenario.name,
             note: scenario.note,
+            group: scenario.group,
             iters: scenario.iters,
             pairs,
             wins,

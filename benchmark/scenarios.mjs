@@ -14,6 +14,13 @@ export const DRIVER = 'postgrejs';
 export const SCHEMA = 'bench_drizzle';
 export const SEED_ROWS = 5000;
 
+/** Built once, so a write scenario times the send and not the making. */
+export const BLOB_4MB = Buffer.alloc(4 * 1024 * 1024, 0x78);
+export const ARRAY_100K = Array.from(
+  { length: 100000 },
+  (_, i) => 2147383646 + i,
+);
+
 export const CONN = {
   host: process.env.PGHOST ?? '127.0.0.1',
   port: Number(process.env.PGPORT ?? 5432),
@@ -70,22 +77,17 @@ export const DDL = [
   // one 100k-element int4[] per value width, in one row of three columns
   `drop table if exists ${SCHEMA}.arrays`,
   `create table ${SCHEMA}.arrays as
-     select array(select (i % 9) + 1 from generate_series(1, 100000) i) as single_digit,
-            array(select generate_series(1, 100000)) as mixed,
-            array(select 2147383646 + i from generate_series(1, 100000) i) as full_width`,
+     select array(select 2147383646 + i from generate_series(1, 100000) i) as full_width`,
 
   // same reason as the blobs below: decompression is not what is being
   // compared, and a sequential int4[] compresses very well
-  `alter table ${SCHEMA}.arrays alter column single_digit set storage external,
-                                 alter column mixed set storage external,
-                                 alter column full_width set storage external`,
-  `update ${SCHEMA}.arrays set mixed = mixed`,
+  `alter table ${SCHEMA}.arrays alter column full_width set storage external`,
+  `update ${SCHEMA}.arrays set full_width = full_width`,
 
   // 5000 rows of the types PostgreJS decodes in binary
   `drop table if exists ${SCHEMA}.scalars`,
   `create table ${SCHEMA}.scalars as
      select (random() * 1e9)::float8 as f,
-            (i % 100)::float8 as small_f,
             gen_random_uuid() as u
      from generate_series(1, 5000) i`,
   `drop table if exists ${SCHEMA}.boxes`,
@@ -94,24 +96,36 @@ export const DDL = [
                 point(random() * 1e6, random() * 1e6)) as v
      from generate_series(1, 5000) i`,
 
+  // what the write scenarios fill. Unlogged: this is measuring the client,
+  // and a WAL write is the same cost on both sides of the comparison while
+  // being large enough to hide what is not.
+  `drop table if exists ${SCHEMA}.writes`,
+  `create unlogged table ${SCHEMA}.writes (
+     id serial primary key,
+     name text,
+     email text,
+     age integer,
+     balance numeric(14, 2),
+     tags text[],
+     meta jsonb,
+     blob bytea,
+     numbers integer[]
+   )`,
+
   // one bytea per size. `external` keeps TOAST from compressing them:
   // repeat('x', n) compresses to nothing, and what would then be measured
   // is the decompression rather than the transfer.
   `drop table if exists ${SCHEMA}.blobs`,
-  `create table ${SCHEMA}.blobs (small bytea, medium bytea, large bytea)`,
-  `alter table ${SCHEMA}.blobs alter column small set storage external,
-                                alter column medium set storage external,
-                                alter column large set storage external`,
-  `insert into ${SCHEMA}.blobs (small, medium, large)
-     values (repeat('x', 1024)::bytea,
-             repeat('x', 262144)::bytea,
-             repeat('x', 4194304)::bytea)`,
+  `create table ${SCHEMA}.blobs (large bytea)`,
+  `alter table ${SCHEMA}.blobs alter column large set storage external`,
+  `insert into ${SCHEMA}.blobs (large) values (repeat('x', 4194304)::bytea)`,
 ];
 
 /** Each one is a single drizzle call, the way a caller would write it. */
 export const SCENARIOS = [
   {
     name: 'point read',
+    group: 'Read',
     note: 'one row by primary key',
     iters: 50,
     pairs: 101,
@@ -122,6 +136,7 @@ export const SCENARIOS = [
   },
   {
     name: 'page of 200',
+    group: 'Read',
     note: 'nine columns, mixed types',
     iters: 20,
     pairs: 101,
@@ -131,20 +146,8 @@ export const SCENARIOS = [
       ),
   },
   {
-    name: 'insert returning',
-    note: 'six parameters',
-    iters: 50,
-    pairs: 101,
-    run: (db, i) =>
-      db.execute(
-        sql`insert into ${sql.raw(SCHEMA)}.rows (name, email, age, balance, tags, meta)
-            values (${'n' + i}, ${'e' + i + '@example.com'}, ${(i % 60) + 18},
-                    ${'12.34'}, ${'{a,b}'}, ${'{"i":1}'})
-            returning id`,
-      ),
-  },
-  {
     name: 'concurrent reads',
+    group: 'Read',
     note: '20 point reads at once, pool of 10',
     iters: 4,
     pairs: 61,
@@ -169,27 +172,8 @@ export const SCENARIOS = [
    * against 781 on the last. Neither is "the" int4 array, so all three run.
    */
   {
-    name: 'int4[] of 100k, single digits',
-    note: 'values 1-9, the width text is cheapest at',
-    iters: 3,
-    pairs: 41,
-    run: db =>
-      db.execute(
-        sql`select single_digit as v from ${sql.raw(SCHEMA)}.arrays limit ${1}`,
-      ),
-  },
-  {
-    name: 'int4[] of 100k, mixed widths',
-    note: 'values 1-100000',
-    iters: 3,
-    pairs: 41,
-    run: db =>
-      db.execute(
-        sql`select mixed as v from ${sql.raw(SCHEMA)}.arrays limit ${1}`,
-      ),
-  },
-  {
     name: 'int4[] of 100k, full width',
+    group: 'Read',
     note: 'values that use the whole type',
     iters: 3,
     pairs: 41,
@@ -222,17 +206,8 @@ export const SCENARIOS = [
    * to compare, by design rather than by omission.
    */
   {
-    name: 'float8 of 5k rows, small',
-    note: 'integer-valued, two or three characters of text',
-    iters: 10,
-    pairs: 61,
-    run: db =>
-      db.execute(
-        sql`select small_f as v from ${sql.raw(SCHEMA)}.scalars limit ${5000}`,
-      ),
-  },
-  {
     name: 'float8 of 5k rows, full width',
+    group: 'Read',
     note: 'eight bytes against seventeen significant digits',
     iters: 10,
     pairs: 61,
@@ -243,6 +218,7 @@ export const SCENARIOS = [
   },
   {
     name: 'uuid of 5k rows',
+    group: 'Read',
     note: 'sixteen bytes against thirty-six characters',
     iters: 10,
     pairs: 61,
@@ -253,6 +229,7 @@ export const SCENARIOS = [
   },
   {
     name: 'box of 5k rows',
+    group: 'Read',
     note: 'four float8s against coordinates that use them',
     iters: 10,
     pairs: 61,
@@ -266,27 +243,8 @@ export const SCENARIOS = [
    * whether the payload is big enough to matter next to a round trip.
    */
   {
-    name: 'bytea of 1KB',
-    note: 'small enough that the round trip dominates',
-    iters: 50,
-    pairs: 101,
-    run: db =>
-      db.execute(
-        sql`select small as v from ${sql.raw(SCHEMA)}.blobs limit ${1}`,
-      ),
-  },
-  {
-    name: 'bytea of 256KB',
-    note: 'a document or a thumbnail',
-    iters: 20,
-    pairs: 61,
-    run: db =>
-      db.execute(
-        sql`select medium as v from ${sql.raw(SCHEMA)}.blobs limit ${1}`,
-      ),
-  },
-  {
     name: 'bytea of 4MB',
+    group: 'Read',
     note: 'large enough to be the whole cost',
     iters: 3,
     pairs: 41,
@@ -294,6 +252,89 @@ export const SCENARIOS = [
       db.execute(
         sql`select large as v from ${sql.raw(SCHEMA)}.blobs limit ${1}`,
       ),
+  },
+  /**
+   * The write side. Reads dominate most applications, but an insert is
+   * where the parameter path is exercised - and this driver hands
+   * PostgreJS `BindParam(0, value)` for the scalars, so the server types
+   * them, while an array or a `Buffer` goes through PostgreJS's own binary
+   * encoder. That is the mirror of the decode story the reads tell.
+   *
+   * Each one empties its table before the batch rather than during it, so
+   * a growing heap and a growing index are not what is being timed.
+   */
+  {
+    name: 'insert one row',
+    note: 'six parameters',
+    group: 'Write',
+    iters: 50,
+    pairs: 101,
+    setup: db => db.execute(sql`truncate ${sql.raw(SCHEMA)}.writes`),
+    run: (db, i) =>
+      db.execute(
+        sql`insert into ${sql.raw(SCHEMA)}.writes (name, email, age, balance, tags, meta)
+            values (${'n' + i}, ${'e' + i + '@example.com'}, ${(i % 60) + 18},
+                    ${'12.34'}, ${'{a,b}'}, ${'{"i":1}'})
+            returning id`,
+      ),
+  },
+  {
+    name: 'insert 500 rows',
+    note: 'one statement, 1500 parameters',
+    group: 'Write',
+    iters: 4,
+    pairs: 61,
+    setup: db => db.execute(sql`truncate ${sql.raw(SCHEMA)}.writes`),
+    run: (db, i) => {
+      const values = [];
+      for (let k = 0; k < 500; k++)
+        values.push(
+          sql`(${'n' + i + '-' + k}, ${'e' + k + '@example.com'}, ${(k % 60) + 18})`,
+        );
+      return db.execute(
+        sql`insert into ${sql.raw(SCHEMA)}.writes (name, email, age) values ${sql.join(values, sql`, `)}`,
+      );
+    },
+  },
+  {
+    name: 'insert a 4MB bytea',
+    note: 'one parameter, the encode side of the read above',
+    group: 'Write',
+    iters: 3,
+    pairs: 41,
+    setup: db => db.execute(sql`truncate ${sql.raw(SCHEMA)}.writes`),
+    run: db =>
+      db.execute(
+        sql`insert into ${sql.raw(SCHEMA)}.writes (blob) values (${sql.param(BLOB_4MB)})`,
+      ),
+  },
+  {
+    name: 'insert a 100k int4[]',
+    note: 'one parameter, an array of full-width integers',
+    group: 'Write',
+    iters: 3,
+    pairs: 41,
+    setup: db => db.execute(sql`truncate ${sql.raw(SCHEMA)}.writes`),
+    run: db =>
+      db.execute(
+        sql`insert into ${sql.raw(SCHEMA)}.writes (numbers) values (${sql.param(ARRAY_100K)})`,
+      ),
+  },
+  {
+    name: 'twenty inserts in a transaction',
+    note: 'what a unit of work looks like',
+    group: 'Write',
+    iters: 4,
+    pairs: 61,
+    setup: db => db.execute(sql`truncate ${sql.raw(SCHEMA)}.writes`),
+    run: (db, i) =>
+      db.transaction(async tx => {
+        for (let k = 0; k < 20; k++)
+          await tx.execute(
+            sql`insert into ${sql.raw(SCHEMA)}.writes (name, age)
+                values (${'n' + i + '-' + k}, ${k})`,
+          );
+      }),
   },
 ];
 
@@ -315,6 +356,34 @@ export function openDatabases(pooled = false) {
       await jsPool.close(true);
     },
   };
+}
+
+/**
+ * The SQL each scenario actually sends, captured rather than restated:
+ * every `run` is called once against a database whose logger records the
+ * compiled query, so what is printed cannot drift from what is measured.
+ */
+export async function describeScenarios(scenarios) {
+  const captured = [];
+  const pool = new PgjsPool({ ...CONN, pool: { max: 1 } });
+  const db = drizzlePgjs(pool, {
+    logger: {
+      logQuery(query, params) {
+        captured.push({ query, params });
+      },
+    },
+  });
+  const described = [];
+  for (const scenario of scenarios) {
+    if (scenario.setup) await scenario.setup(db);
+    captured.length = 0;
+    await scenario.run(db, 0);
+    // the concurrent scenario fires twenty of the same statement
+    const { query, params } = captured[0] ?? { query: '?', params: [] };
+    described.push({ scenario, query, params, calls: captured.length });
+  }
+  await pool.close(true);
+  return described;
 }
 
 export const scenariosMatching = only =>

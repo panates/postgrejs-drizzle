@@ -128,11 +128,14 @@ function memoryTable(results) {
  * row is two numbers about one call, and standing them side by side made
  * the table wider than it was informative.
  */
-function headlineTable(results) {
+function headlineTable(results, group) {
   const pair = (top, bottom) => `${top}<br>${bottom}`;
+  const rows = group
+    ? results.scenarios.filter(s => s.group === group)
+    : results.scenarios;
   return table(
     ['Scenario', `${CONTROL}<br>peak memory`, `${DRIVER}<br>peak memory`, ''],
-    results.scenarios.map(scenario => {
+    rows.map(scenario => {
       const { control, driver, ratio, won, heapRatio, heapSettled } =
         speedup(scenario);
       return [
@@ -218,93 +221,71 @@ const list = items =>
  */
 function reading(results) {
   const named = results.scenarios.map(s => ({ ...s, ...speedup(s) }));
-  const faster = named.filter(s => s.won && s.ratio > 1);
-  const slower = named.filter(s => s.won && s.ratio < 1);
-  const levelSpeed = named.filter(s => !s.won);
+  const reads = named.filter(s => s.group === 'Read');
+  const writes = named.filter(s => s.group === 'Write');
+  const payload = reads.filter(s => s.ratio > 1.5);
+  const ordinary = reads.filter(s => s.ratio <= 1.5);
   const leaner = named.filter(s => s.heapSettled && s.heapRatio > 1);
   const heavier = named.filter(s => s.heapSettled && s.heapRatio < 1);
-  const payload = named.filter(s => s.ratio > 1.5);
-  const widths = named.filter(s => s.name.startsWith('int4[]'));
-  const array = named.find(s =>
-    s.name.startsWith('int4[] of 100k, full width'),
-  );
-  const sizes = named.filter(s => s.name.startsWith('bytea'));
+  const array = named.find(s => s.name.startsWith('int4[]'));
   const bytes = named.find(s => s.name.startsWith('bytea of 4MB'));
 
-  const fixed = heavier.length
-    ? `On the small workloads it is the other way: ${list(
-        heavier.map(
-          s =>
-            `${s.name} allocates ${s.driver.perCallKb.toFixed(1)} KB a call against ${s.control.perCallKb.toFixed(1)}`,
-        ),
-      )}. That is garbage rather than growth, and the distinction is the whole point: at rest the two are within a few hundred KB of each other - ${list(
-        heavier.map(
-          s =>
-            `${mb(s.driver.atRestKb)} against ${mb(s.control.atRestKb)} on ${s.name}`,
-        ),
-      )} - so what it costs is collector time on a hot path, not footprint. Measured over 100, 400 and 1600 calls of a point read the gap scales with the call count and the at-rest figure does not move, which is what says churn rather than a structure being held.`
-    : '';
-
-  const lost = slower.length
-    ? [
-        `**And one row goes the other way, settled.** ${list(
-          slower.map(
-            s =>
-              `\`pg\` takes ${s.name} ${(1 / s.ratio).toFixed(2)}x, winning ${s.pairs - s.wins} of ${s.pairs} pairs`,
-          ),
-        )}. It is the case where binary costs more than it saves: sixteen bytes have to become a thirty-six character string in canonical form, and \`pg\` is handed that string already made. Half the wire - ${kbOrMb(slower[0].driver.wireKb)} against ${kbOrMb(slower[0].control.wireKb)} - does not pay for the work of rebuilding it.`,
-      ]
-    : [];
-
-  return [
-    `**Speed follows the payload.** ${list(
-      payload.map(s => `${s.name} is ${s.ratio.toFixed(1)}x`),
-    )}. On the ordinary shapes the gap is small and, ${
-      faster.length === named.length
-        ? 'on every one of them, repeatable'
-        : `on ${list(faster.filter(s => s.ratio <= 1.5).map(s => s.name))}, repeatable`
-    }${levelSpeed.length ? `; ${list(levelSpeed.map(s => s.name))} ${levelSpeed.length > 1 ? 'are' : 'is'} not distinguishable from a coin` : ''}.`,
-
-    ...lost,
-
-    `**Memory divides the same way, and it is worth being exact about.** Where the payload is large PostgreJS holds far less of it: ${list(
-      leaner.map(
+  const paragraphs = [
+    `**Reading is where the payload decides it.** ${list(
+      payload.map(s => `${s.name.split(' - ')[0]} is ${s.ratio.toFixed(1)}x`),
+    )}. The ordinary shapes move much less - ${list(
+      ordinary.map(
         s =>
-          `${s.name} peaks at ${mb(s.driver.peakKb)} against ${mb(s.control.peakKb)}`,
+          `${s.name.split(' - ')[0]} ${s.won && s.ratio > 1 ? `${s.ratio.toFixed(2)}x` : 'level'}`,
       ),
-    )}. ${fixed}`,
+    )} - because a short result is mostly a round trip, and a round trip is the same round trip.`,
 
-    `**The \`bytea\` row is the one to read twice.** ${bytes.control.perCallKb >= 1024 ? mb(bytes.control.perCallKb) : `${bytes.control.perCallKb.toFixed(0)} KB`} a call against ${bytes.driver.perCallKb >= 1024 ? mb(bytes.driver.perCallKb) : `${bytes.driver.perCallKb.toFixed(0)} KB`}, and an earlier revision of this file had it the other way round - 0.39 MB against 0.75 MB - because it measured \`heapUsed\` alone. A \`Buffer\` is not on the JS heap, and a \`bytea\` is a \`Buffer\`, so the 4MB column \`pg\` was holding as 8MB of hex text plus a buffer was invisible to the number being printed.`,
-
-    `**Why the payload rows separate, and where the wire comes into it.** PostgreJS reads these columns in PostgreSQL's binary format where \`pg\` reads them as text. On the wire that is worth less than it sounds, and the three \`int4[]\` rows are there because the values decide it rather than the driver:`,
-
-    `${widths
-      .map(
-        w =>
-          `- ${w.note}: ${kbOrMb(w.control.wireKb)} off the wire against ${kbOrMb(w.driver.wireKb)}, and ${w.won && w.ratio > 1 ? `${w.ratio.toFixed(1)}x` : 'level'} on the clock.`,
-      )
-      .join(
-        '\n',
-      )}\n- Binary costs 8 bytes an element whatever the value; text costs a byte a digit. So a column of single digits flatters the text form and one that uses the type flatters the binary one, and quoting either alone would be a choice dressed as a measurement.\n- A \`bytea\` has no such freedom - it is \`\\x\`-prefixed hex, two characters a byte, whatever the bytes are - so there the wire saving is real and fixed at half. What varies instead is whether the payload is large enough to matter next to the round trip: ${list(
-      sizes.map(
-        z =>
-          `${z.name.replace('bytea of ', '')} is ${z.won && z.ratio > 1 ? `${z.ratio.toFixed(1)}x` : 'level'} (${kbOrMb(z.control.wireKb)} against ${kbOrMb(z.driver.wireKb)})`,
+    `**Writing moves less, and in one direction.** ${list(
+      writes.map(
+        s =>
+          `${s.name.split(' - ')[0]} ${s.won && s.ratio > 1 ? `${s.ratio.toFixed(2)}x` : 'level'}`,
       ),
-    )}.`,
+    )}. The server does the work in a write - parsing, planning, the heap, the WAL - so what a client
+     saves on encoding is a smaller share of the whole than what it saves on decoding. The two
+     payload writes are the ones to look at: a 4MB \`bytea\` and a 100k \`int4[]\` are where the binary
+     encoder is doing something the text path cannot, and they are still only ${writes
+       .filter(s => s.name.includes('4MB') || s.name.includes('int4[]'))
+       .map(s => `${s.ratio.toFixed(2)}x`)
+       .join(' and ')}.`,
 
-    `**What it is winning is mostly the parse, not the bytes.** At full width PostgreJS pulls ${kbOrMb(array.driver.wireKb)} against ${kbOrMb(array.control.wireKb)} and is ${array.ratio.toFixed(1)}x faster; at single digits it pulls four times the bytes \`pg\` does and is still ahead, in ${widths[0].wins} of ${widths[0].pairs} pairs. The text path materialises the whole array literal as one string and walks it, where the binary path reads elements out of the buffer it already has - which is the same reason it allocates ${kbOrMb(array.driver.perCallKb)} a call against ${kbOrMb(array.control.perCallKb)}.`,
+    `**Memory splits by size, not by direction.** Where the payload is large PostgreJS holds less of
+     it: ${list(
+       leaner.map(
+         s =>
+           `${s.name.split(' - ')[0]} peaks at ${mb(s.driver.peakKb)} against ${mb(s.control.peakKb)}`,
+       ),
+     )}. Everywhere else it allocates more per call - ${heavier.length} of the ${named.length}
+     scenarios - and the distinction that matters is that this is garbage rather than growth: at
+     rest the two sit within a few hundred KB of each other whatever the scenario. Measured over
+     100, 400 and 1600 calls of a point read the gap scales with the call count and the at-rest
+     figure does not move, which is what says churn rather than a structure being held.`,
 
-    `**Where it reaches you.** Through drizzle, these are \`bytea\` columns, array columns, and anything large in a raw \`db.execute()\`. A schema of text, integers and timestamps sees the top of that table and not the bottom.`,
-  ]
-    .map(paragraph =>
-      paragraph.startsWith('- ')
-        ? paragraph
-            .split('\n')
-            .map(line => wrap(line, 98).replace(/\n/g, '\n  '))
-            .join('\n')
-        : wrap(paragraph),
-    )
-    .join('\n\n');
+    `**Why the payload rows separate.** PostgreJS reads and writes these columns in PostgreSQL's
+     binary format where \`pg\` uses text. On the wire that is worth less than it sounds and depends
+     on the values: binary costs 8 bytes an \`int4\` element whatever the number, text a byte a digit,
+     so the full-width array this table uses pulls ${kbOrMb(array.driver.wireKb)} against
+     ${kbOrMb(array.control.wireKb)} while an array of single digits would pull 781 KB against 195
+     and still not lose. A \`bytea\` has no such freedom - \`\\x\`-prefixed hex is two characters a byte
+     whatever the bytes are - so there the saving is fixed at half: ${kbOrMb(bytes.control.wireKb)}
+     against ${kbOrMb(bytes.driver.wireKb)}.`,
+
+    `**What it is winning is mostly the parse, not the bytes.** The text path materialises the whole
+     value as a string and walks it; the binary path reads it out of the buffer it already has. That
+     is also why it allocates ${kbOrMb(array.driver.perCallKb)} a call against
+     ${kbOrMb(array.control.perCallKb)} on the array, and why the single-digit case - where it pulls
+     four times the bytes \`pg\` does - was still not behind when it was measured.`,
+
+    `**Where it reaches you.** Through drizzle, these are \`bytea\` columns, array columns, and
+     anything large in a raw \`db.execute()\`. A schema of text, integers and timestamps sees the
+     ordinary rows and not the payload ones.`,
+  ];
+
+  return paragraphs.map(paragraph => wrap(paragraph)).join('\n\n');
 }
 
 function document(results) {
@@ -348,7 +329,13 @@ forced-GC baseline while a unit ran, so it needs \`--expose-gc\` to mean anythin
 
 ${wrap(`Node ${versions.node}, \`postgrejs\` ${versions.postgrejs}, \`pg\` ${versions.pg}, \`drizzle-orm\` ${versions.drizzle}, PostgreSQL on loopback, medians per call.`)}
 
-${headlineTable(results)}
+### Reading
+
+${headlineTable(results, 'Read')}
+
+### Writing
+
+${headlineTable(results, 'Write')}
 
 And which driver actually won, pair by pair:
 

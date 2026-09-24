@@ -43,8 +43,10 @@ const db = dbs[which];
 // Warm up first: the JIT, the pool's connections and - on this driver -
 // the prepared statement each distinct SQL earns. What is measured is a
 // scenario in its steady state, not its first call.
+if (scenario.setup) await scenario.setup(db);
 const warmup = Math.min(scenario.iters * 4, 60);
 for (let i = 0; i < warmup; i++) await scenario.run(db, i);
+if (scenario.setup) await scenario.setup(db);
 
 globalThis.gc();
 globalThis.gc();
