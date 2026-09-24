@@ -74,6 +74,7 @@ export const DDL = [
   `drop table if exists ${SCHEMA}.scalars`,
   `create table ${SCHEMA}.scalars as
      select (random() * 1e9)::float8 as f,
+            (i % 100)::float8 as small_f,
             gen_random_uuid() as u
      from generate_series(1, 5000) i`,
   `drop table if exists ${SCHEMA}.boxes`,
@@ -186,8 +187,11 @@ export const SCENARIOS = [
    * fixed; the width of the text form is whatever the value needs. Which
    * way that falls decides the row, and it falls all three ways here.
    *
-   * The coordinates are wide on purpose, for the reason the three
-   * `int4[]` rows exist: a box of single-digit corners is a box whose
+   * `float8` is split by width for the reason the three `int4[]` rows
+   * exist, and it separates the two drivers as sharply: PostgreJS pulls
+   * 93 KB whatever the values are, `pg` 63 KB for small integers and 139
+   * for the full-width ones, and on the small ones `pg` is the faster of
+   * the two. The coordinates of the boxes are wide on the same grounds: a box of single-digit corners is a box whose
    * text form is shorter than its binary one, and quoting that as the
    * cost of a `box` column would be choosing the answer. Measured both
    * ways, PostgreJS pulls the same 210 KB either way and `pg` goes from
@@ -201,8 +205,16 @@ export const SCENARIOS = [
    * to compare, by design rather than by omission.
    */
   {
-    name: 'float8 of 5k rows',
-    note: 'eight bytes against up to seventeen digits',
+    name: 'float8 of 5k rows, small',
+    note: 'integer-valued, two or three characters of text',
+    iters: 10,
+    pairs: 61,
+    run: db =>
+      db.execute(sql`select small_f as v from ${sql.raw(SCHEMA)}.scalars`),
+  },
+  {
+    name: 'float8 of 5k rows, full width',
+    note: 'eight bytes against seventeen significant digits',
     iters: 10,
     pairs: 61,
     run: db => db.execute(sql`select f as v from ${sql.raw(SCHEMA)}.scalars`),
