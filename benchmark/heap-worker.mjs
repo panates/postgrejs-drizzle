@@ -22,10 +22,18 @@ import net from 'node:net';
 // binary format was argued from the encoding here until it was counted,
 // and for an int4[] of small numbers the argument had it backwards.
 let received = 0;
+let sent = 0;
 const push = net.Socket.prototype.push;
 net.Socket.prototype.push = function (chunk, ...rest) {
   if (chunk) received += chunk.length;
   return push.call(this, chunk, ...rest);
+};
+// and what goes out, which a write scenario is entirely made of - the
+// received column reads 0.0 KB for every one of them
+const write = net.Socket.prototype.write;
+net.Socket.prototype.write = function (chunk, ...rest) {
+  if (chunk) sent += chunk.length ?? Buffer.byteLength(chunk);
+  return write.call(this, chunk, ...rest);
 };
 
 const { CONTROL, DRIVER, openDatabases, scenariosMatching } =
@@ -76,8 +84,10 @@ const poll = setInterval(() => {
 
 const iterations = scenario.iters * 8;
 const receivedBefore = received;
+const sentBefore = sent;
 for (let i = 0; i < iterations; i++) await scenario.run(db, i);
 const wireKb = (received - receivedBefore) / 1024 / iterations;
+const wireOutKb = (sent - sentBefore) / 1024 / iterations;
 
 clearInterval(poll);
 globalThis.gc();
@@ -91,6 +101,7 @@ const measured = {
   // what it did not give back
   atRestKb: (atRest.heapUsed + atRest.external) / 1024,
   wireKb,
+  wireOutKb,
   perCallKb: 0, // filled in below
   peakKb: peak / 1024,
   peakHeapOnlyKb: peakHeapOnly / 1024,

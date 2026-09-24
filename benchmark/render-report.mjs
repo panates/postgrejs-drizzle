@@ -107,6 +107,7 @@ function memoryTable(results) {
       `at rest (${CONTROL} / ${DRIVER})`,
       `allocated per call (${CONTROL} / ${DRIVER})`,
       `off the wire per call (${CONTROL} / ${DRIVER})`,
+      `onto the wire per call (${CONTROL} / ${DRIVER})`,
     ],
     results.scenarios.map(scenario => {
       const { control, driver } = speedup(scenario);
@@ -117,6 +118,7 @@ function memoryTable(results) {
         `${mb(control.atRestKb)} / ${mb(driver.atRestKb)}`,
         `${kb(control.perCallKb)} / ${kb(driver.perCallKb)}`,
         `${kb(control.wireKb)} / ${kb(driver.wireKb)}`,
+        `${kb(control.wireOutKb)} / ${kb(driver.wireOutKb)}`,
       ];
     }),
   );
@@ -230,28 +232,45 @@ function reading(results) {
   const array = named.find(s => s.name.startsWith('int4[]'));
   const bytes = named.find(s => s.name.startsWith('bytea of 4MB'));
 
+  const says = s =>
+    !s.won
+      ? 'level'
+      : s.ratio > 1
+        ? `${s.ratio.toFixed(2)}x`
+        : `${(1 / s.ratio).toFixed(2)}x to \`pg\``;
+  const arrayWrite = writes.find(s => s.name.includes('int4[]'));
+  const blobWrite = writes.find(s => s.name.includes('bytea'));
+  const bulkWrite = writes.find(s => s.name.includes('500 rows'));
+
   const paragraphs = [
     `**Reading is where the payload decides it.** ${list(
       payload.map(s => `${s.name.split(' - ')[0]} is ${s.ratio.toFixed(1)}x`),
     )}. The ordinary shapes move much less - ${list(
-      ordinary.map(
-        s =>
-          `${s.name.split(' - ')[0]} ${s.won && s.ratio > 1 ? `${s.ratio.toFixed(2)}x` : 'level'}`,
-      ),
+      ordinary.map(s => `${s.name.split(' - ')[0]} ${says(s)}`),
     )} - because a short result is mostly a round trip, and a round trip is the same round trip.`,
 
-    `**Writing moves less, and in one direction.** ${list(
-      writes.map(
-        s =>
-          `${s.name.split(' - ')[0]} ${s.won && s.ratio > 1 ? `${s.ratio.toFixed(2)}x` : 'level'}`,
-      ),
-    )}. The server does the work in a write - parsing, planning, the heap, the WAL - so what a client
-     saves on encoding is a smaller share of the whole than what it saves on decoding. The two
-     payload writes are the ones to look at: a 4MB \`bytea\` and a 100k \`int4[]\` are where the binary
-     encoder is doing something the text path cannot, and they are still only ${writes
-       .filter(s => s.name.includes('4MB') || s.name.includes('int4[]'))
-       .map(s => `${s.ratio.toFixed(2)}x`)
-       .join(' and ')}.`,
+    `**Writing moves less, and one row goes the other way.** ${list(
+      writes.map(s => `${s.name.split(' - ')[0]} ${says(s)}`),
+    )}. The server does the work in a write - parsing, planning, the heap, the WAL - so a client can
+     only save on its own share of it, and that share is smaller than the decoding it saves on a
+     read.`,
+
+    `**And the wire is the same on both sides of every write.** Counted at the socket: ${kbOrMb(
+      blobWrite.control.wireOutKb,
+    )} for the 4MB \`bytea\`, which each driver sends as binary, and ${kbOrMb(
+      arrayWrite.control.wireOutKb,
+    )} for the 100k \`int4[]\`, which each sends as text. The array is text on purpose - PostgreJS
+     stopped declaring an element type for an array of numbers because \`[1, 2]\` is one of six array
+     types depending on where it lands and they have no casts between them, so declaring \`int4[]\`
+     broke four of the six. With identical bytes going out, ${arrayWrite.name.split(' - ')[0]} is
+     ${says(arrayWrite)} and allocates ${kbOrMb(arrayWrite.driver.perCallKb)} a call against
+     ${kbOrMb(arrayWrite.control.perCallKb)} building the same literal, which is written up for that
+     repository rather than worked around here.`,
+
+    `**Where a write does save bytes, it is the statement and not the data.** ${bulkWrite.name.split(' - ')[0]}
+     sends ${kbOrMb(bulkWrite.driver.wireOutKb)} against ${kbOrMb(bulkWrite.control.wireOutKb)} - the
+     statement itself is 2500 placeholders long, and \`pg\` binds it unnamed, so the server is handed
+     the whole text on every call. PostgreJS names it once and sends Bind and Execute after that.`,
 
     `**Memory splits by size, not by direction.** Where the payload is large PostgreJS holds less of
      it: ${list(

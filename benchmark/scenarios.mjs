@@ -105,7 +105,8 @@ export const DDL = [
      name text,
      email text,
      age integer,
-     balance numeric(14, 2),
+     big bigint,
+     balance numeric(20, 6),
      tags text[],
      meta jsonb,
      blob bytea,
@@ -254,11 +255,22 @@ export const SCENARIOS = [
       ),
   },
   /**
-   * The write side. Reads dominate most applications, but an insert is
-   * where the parameter path is exercised - and this driver hands
-   * PostgreJS `BindParam(0, value)` for the scalars, so the server types
-   * them, while an array or a `Buffer` goes through PostgreJS's own binary
-   * encoder. That is the mirror of the decode story the reads tell.
+   * The write side, and it is not the mirror of the read side.
+   *
+   * Measured at the socket, both drivers send the same bytes for both
+   * payloads: 4096 KB for the `bytea`, which each encodes as binary, and
+   * 1270 KB for the 100k `int4[]`, which each sends as text. The array is
+   * text on purpose rather than by omission - PostgreJS stopped declaring
+   * an element type for an array of numbers in 660aa54, because `[1, 2]`
+   * is `int2[]`, `int4[]`, `int8[]`, `numeric[]`, `float4[]` or `float8[]`
+   * depending on where it lands and those have no casts between them, so
+   * declaring one broke four of the six. An array of anything with only
+   * one possible type - a `Buffer`, a boolean, one of its own classes -
+   * keeps its declaration and its binary encoding.
+   *
+   * So these rows measure the client's own work on an identical wire,
+   * not a wire-format advantage. Scalars still go out as
+   * `BindParam(0, value)` for the server to type.
    *
    * Each one empties its table before the batch rather than during it, so
    * a growing heap and a growing index are not what is being timed.
@@ -280,25 +292,32 @@ export const SCENARIOS = [
   },
   {
     name: 'insert 500 rows',
-    note: 'one statement, 1500 parameters',
+    note: 'one statement, 2500 parameters, values that fill their types',
     group: 'Write',
     iters: 4,
     pairs: 61,
     setup: db => db.execute(sql`truncate ${sql.raw(SCHEMA)}.writes`),
     run: (db, i) => {
+      // wide on purpose: a row of short values measures the round trip
+      // rather than anything either driver does with the values in it
       const values = [];
       for (let k = 0; k < 500; k++)
         values.push(
-          sql`(${'n' + i + '-' + k}, ${'e' + k + '@example.com'}, ${(k % 60) + 18})`,
+          sql`(${'name-' + i + '-' + k + '-'.padEnd(40, 'x')},
+               ${'user' + k + '@an-example-domain-that-is-long.example.com'},
+               ${(k % 60) + 18},
+               ${String(9007199254740990n + BigInt(k))},
+               ${'123456789012.345678'})`,
         );
       return db.execute(
-        sql`insert into ${sql.raw(SCHEMA)}.writes (name, email, age) values ${sql.join(values, sql`, `)}`,
+        sql`insert into ${sql.raw(SCHEMA)}.writes (name, email, age, big, balance)
+            values ${sql.join(values, sql`, `)}`,
       );
     },
   },
   {
     name: 'insert a 4MB bytea',
-    note: 'one parameter, the encode side of the read above',
+    note: 'one parameter, and binary on both sides',
     group: 'Write',
     iters: 3,
     pairs: 41,
@@ -310,7 +329,7 @@ export const SCENARIOS = [
   },
   {
     name: 'insert a 100k int4[]',
-    note: 'one parameter, an array of full-width integers',
+    note: 'one parameter, and text on both sides - see below',
     group: 'Write',
     iters: 3,
     pairs: 41,
