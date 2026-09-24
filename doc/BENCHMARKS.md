@@ -132,6 +132,28 @@ holding as 8MB of hex text plus a buffer was invisible to the number being print
 large in a raw `db.execute()`. A schema of text, integers and timestamps sees the top of that table
 and not the bottom.
 
-The client underneath has its own suite against `pg` and `postgres.js`, on more scenarios than this -
-COPY, cursors, pooling, pipelining - in
+## How this differs from postgrejs's own suite
+
+The client underneath has its own benchmark against `pg` and `postgres.js`, on more scenarios than
+this - COPY, cursors, pooling, pipelining - in
 [`postgrejs/doc/BENCHMARKS.md`](https://github.com/panates/postgrejs/blob/master/doc/BENCHMARKS.md).
+It measures the client; this measures the client through drizzle, so the two are not interchangeable
+and the numbers should not be read across. Where the method itself differs, and why:
+
+| | postgrejs's suite | here |
+| --- | --- | --- |
+| process | one child per library | the same |
+| baseline | forced GC, then the run - warmup included in the window | forced GC after warmup, so one-time structures sit under it |
+| sampled | `heapUsed` | `heapUsed` + `external`, as one sample |
+| reported | peak growth, and GC ms/op | peak, allocation per call, and heap at rest |
+| statistic | median of 3 to 9 repeats | median of paired runs, with a sign test on the split |
+
+The first difference is a choice: baking warmup into the window measures a scenario from cold, which
+answers "what does this cost" but cannot separate what a driver holds from what a call throws away.
+Both are reported here instead, because on the small workloads they point opposite ways.
+
+The second is not a choice. `heapUsed` does not count a `Buffer`, and a `bytea` is a `Buffer`, so
+that column is blind to exactly the payload it exists to measure - visible in its own Large Blob
+Fetch row, which moves 25 MB per op and reports a 2 MB peak. It is written up for that repository as
+`peak-heap-misses-buffers.md`; nothing is worked around here beyond counting the byte that the other
+one misses.
