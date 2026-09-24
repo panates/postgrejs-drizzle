@@ -142,15 +142,29 @@ and the numbers should not be read across. Where the method itself differs, and 
 
 | | postgrejs's suite | here |
 | --- | --- | --- |
-| process | one child per library | the same |
+| process | one child per library | a child per driver for memory, one shared process for the timings |
 | baseline | forced GC, then the run - warmup included in the window | forced GC after warmup, so one-time structures sit under it |
 | sampled | `heapUsed` + `external`, as one sample | the same |
 | reported | peak growth, and GC ms/op | peak, allocation per call, and heap at rest |
 | statistic | median of 3 to 9 repeats | median of paired runs, with a sign test on the split |
 
-The first difference is a choice: baking warmup into the window measures a scenario from cold, which
-answers "what does this cost" but cannot separate what a driver holds from what a call throws away.
-Both are reported here instead, because on the small workloads they point opposite ways.
+Splitting the two is measured rather than assumed. For memory a child per driver is not optional:
+with both alive in one process the baseline is taken with both already up, so what a client
+allocates once and keeps sits under the window instead of in it - the point read's figures were 1.0
+MB against 1.1 MB that way, which is noise, against 11.5 MB and 12.1 MB with a process each and
+spreads of about 250 KB.
+
+For the timings it buys nothing. Run one driver per process, 21 alternated rounds, the point read
+comes out 0.507 ms against 0.481 with postgrejs ahead in 17 of 21 (p = 0.007); paired inside one
+process it is 0.463 against 0.425, ahead in 73 of 101 (p < 1 in 10^5). Same direction, same order of
+size - so sharing a process is not distorting the comparison, which is the thing isolation would be
+bought to rule out. What it costs is power: a process per sample yields far fewer samples for the
+same wall clock, and a wider spread with them (0.433-0.698 ms alone), because two runs on a shared
+machine minutes apart are not the same experiment while two alternated inside one pair are.
+
+The baseline's position is a choice: baking warmup into the window measures a scenario from cold,
+which answers "what does this cost" but cannot separate what a driver holds from what a call throws
+away. Both are reported here instead, because on the small workloads they point opposite ways.
 
 The memory accounting used to differ and no longer does. That suite sampled `heapUsed` alone, which
 cannot see a `Buffer` - and a `bytea` is a `Buffer` - so its Peak Heap was blind to exactly the
