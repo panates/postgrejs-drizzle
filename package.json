@@ -50,6 +50,7 @@
     "precitest": "rimraf coverage",
     "citest": "c8 mocha",
     "bench": "node --expose-gc benchmark/drizzle-bench.mjs",
+    "bench:report": "node benchmark/render-report.mjs",
     "qc": "npm run lint && npm run check",
     "version": "auto-changelog -p && git add CHANGELOG.md",
     "prepare": "husky || true"

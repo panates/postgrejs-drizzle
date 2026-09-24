@@ -12,11 +12,14 @@
  *   node --expose-gc benchmark/drizzle-bench.mjs
  *   node --expose-gc benchmark/drizzle-bench.mjs --repeats=7 --scenario=page
  */
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { sql } from 'drizzle-orm';
 import { drizzle as drizzleNodePg } from 'drizzle-orm/node-postgres';
 import { Pool as PgPool } from 'pg';
 import { Pool as PgjsPool } from 'postgrejs';
 import { drizzle as drizzlePgjs } from '../build/index.js';
+
+const RESULTS_FILE = new URL('./results/latest.json', import.meta.url);
 
 const arg = (name, fallback) => {
   const hit = process.argv.find(a => a.startsWith(`--${name}=`));
@@ -192,12 +195,12 @@ async function main() {
   const jsPoolN = new PgjsPool({ ...CONN, pool: { max: 10 } });
   const dbs = {
     'node-postgres': drizzleNodePg(pgPool, { logger: false }),
-    'this driver': drizzlePgjs(jsPool, { logger: false }),
+    postgrejs: drizzlePgjs(jsPool, { logger: false }),
   };
   // the same two drivers over a pool of ten, for the concurrent scenario
   const pooled = {
     'node-postgres': drizzleNodePg(pgPoolN, { logger: false }),
-    'this driver': drizzlePgjs(jsPoolN, { logger: false }),
+    postgrejs: drizzlePgjs(jsPoolN, { logger: false }),
   };
   const dbFor = (scenario, name) =>
     scenario.pooled ? pooled[name] : dbs[name];
@@ -253,11 +256,51 @@ async function main() {
   await pgPoolN.end();
   await jsPoolN.close(true);
 
+  // read off disk rather than imported: drizzle-orm's `exports` map does
+  // not expose its own package.json, and an import of it throws
+  const versionOf = async name =>
+    JSON.parse(
+      await readFile(
+        new URL(`../node_modules/${name}/package.json`, import.meta.url),
+        'utf8',
+      ),
+    ).version;
+  const versions = {
+    node: process.version,
+    postgrejs: await versionOf('postgrejs'),
+    pg: await versionOf('pg'),
+    drizzle: await versionOf('drizzle-orm'),
+  };
+
+  // the run's own record, so `npm run bench:report` can render it without
+  // running anything - and so nothing has to be copied by hand
+  await mkdir(new URL('.', RESULTS_FILE), { recursive: true });
+  await writeFile(
+    RESULTS_FILE,
+    JSON.stringify(
+      {
+        measuredAt: new Date().toISOString(),
+        versions,
+        scenarios: results.map(({ scenario, pairs, wins, p, rows }) => ({
+          name: scenario.name,
+          note: scenario.note,
+          iters: scenario.iters,
+          pairs,
+          wins,
+          p,
+          rows,
+        })),
+      },
+      null,
+      2,
+    ) + '\n',
+  );
+
   console.log(
     `\nmedian per call, drivers alternated within every pair, order swapped each pair`,
   );
   console.log(
-    `node ${process.version}, postgrejs ${(await import('postgrejs/package.json', { with: { type: 'json' } })).default.version}, pg ${(await import('pg/package.json', { with: { type: 'json' } })).default.version}\n`,
+    `node ${versions.node}, postgrejs ${versions.postgrejs}, pg ${versions.pg}\n`,
   );
   for (const { scenario, rows, pairs, wins, p } of results) {
     console.log(
@@ -271,9 +314,12 @@ async function main() {
           `spread ${r.lo.toFixed(3)}-${r.hi.toFixed(3)}  ` +
           `peak heap ${r.peakKb.toFixed(0).padStart(7)} KB`,
       );
-    console.log(`  -> this driver won ${wins} of ${pairs} pairs, ${odds(p)}`);
+    console.log(`  -> postgrejs won ${wins} of ${pairs} pairs, ${odds(p)}`);
     console.log();
   }
+  console.log(
+    'written to benchmark/results/latest.json - `npm run bench:report` renders it\n',
+  );
 }
 
 await main();
