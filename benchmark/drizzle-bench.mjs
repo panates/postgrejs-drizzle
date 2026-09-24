@@ -201,8 +201,8 @@ async function main() {
         wireOut[name].push(measured[name].wireOutKb);
         memoryCalls = measured[name].iterations;
       }
-      if (measured[names[1]].perCallKb < measured[names[0]].perCallKb)
-        heapWins++;
+      // on the peak, because that is the number the report's column shows
+      if (measured[names[1]].peakKb < measured[names[0]].peakKb) heapWins++;
     }
 
     results.push({

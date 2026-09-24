@@ -54,7 +54,11 @@ function wrap(text, width = 100) {
 const ms = value => `${value.toFixed(3)} ms`;
 const kbOrMb = value =>
   value >= 1024 ? `${(value / 1024).toFixed(1)} MB` : `${value.toFixed(1)} KB`;
-const mb = kb => `${(kb / 1024).toFixed(kb < 1024 ? 2 : 1)} MB`;
+/** KB below a megabyte, MB above it - `0.00 MB` says nothing. */
+const mb = kb =>
+  kb < 1024
+    ? `${kb.toFixed(kb < 10 ? 1 : 0)} KB`
+    : `${(kb / 1024).toFixed(1)} MB`;
 const bold = (text, when) => (when ? `**${text}**` : text);
 
 /** What the sign test's split is worth saying about. */
@@ -74,7 +78,9 @@ const speedup = scenario => {
     won: scenario.p < 0.05,
     // the heap gets the same treatment as the timings: a split a coin
     // would produce is reported as level, whichever way the medians fell
-    heapRatio: control.perCallKb / driver.perCallKb,
+    // the peak, because that is what the column shows and what the sign
+    // test counted - the churn is its own column further down
+    heapRatio: control.peakKb / driver.peakKb,
     heapSettled: scenario.heapP < 0.05,
   };
 };
@@ -93,6 +99,8 @@ function verdict(settled, ratio) {
  * held more, and the sign carries which way without a phrase for it.
  */
 function percent(settled, control, driver) {
+  // a call whose peak the 1ms sampler cannot catch has nothing to compare
+  if (control < 16 && driver < 16) return 'under a sample';
   if (!settled) return 'level';
   const change = ((driver - control) / control) * 100;
   const text = `${change > 0 ? '+' : ''}${change.toFixed(0)}%`;

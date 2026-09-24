@@ -59,27 +59,50 @@ if (scenario.setup) await scenario.setup(db);
 globalThis.gc();
 globalThis.gc();
 // What the driver holds at rest, warm: its pool, its buffers, its
-// prepared statements. Separate from what a batch churns through, and the
-// two answer different questions - "how much does it need" against "how
-// much garbage does a call make".
+// prepared statements. Separate from what a call needs and from what a
+// batch churns through - three different questions.
 const atRest = process.memoryUsage();
-const baseline = atRest.heapUsed;
+
+/**
+ * What one call needs at once: collect, take a baseline, run a single
+ * call, keep the highest sample. Median of a few.
+ *
+ * Measured over a batch instead, this reads as how much garbage piles up
+ * before the collector arrives, which is a fact about GC scheduling
+ * rather than about the driver - and it inverted the answer on the one
+ * scenario it was checked against. A 100k `int4[]` insert peaks at 12.6
+ * MB a call here and 30.4 MB under `pg`; over 24 calls the same sampling
+ * said the opposite.
+ */
+const peaks = [];
+const ROUNDS = 5;
+for (let round = 0; round < ROUNDS; round++) {
+  globalThis.gc();
+  globalThis.gc();
+  const base = process.memoryUsage();
+  let highest = 0;
+  const watch = setInterval(() => {
+    const usage = process.memoryUsage();
+    const delta =
+      usage.heapUsed - base.heapUsed + (usage.external - base.external);
+    if (delta > highest) highest = delta;
+  }, 1);
+  await scenario.run(db, round);
+  clearInterval(watch);
+  peaks.push(highest / 1024);
+}
+peaks.sort((a, b) => a - b);
+const peakKb = peaks[Math.floor(peaks.length / 2)];
+
+// and the churn: everything a batch allocates, per call, which is the
+// collector's workload rather than the process's high-water mark
+const baseline = process.memoryUsage().heapUsed;
 const externalBaseline = process.memoryUsage().external;
-let peak = 0;
-let peakHeapOnly = 0;
-let peakExternalOnly = 0;
+let churn = 0;
 const poll = setInterval(() => {
   const usage = process.memoryUsage();
-  const heap = usage.heapUsed - baseline;
-  // A Buffer lives outside the JS heap, and `bytea` is a Buffer: measured
-  // on heapUsed alone, pg's 4MB column reads as 0.4 MB while it is really
-  // holding 49 MB of it off-heap. What a process costs is both together,
-  // sampled as one number so the two peaks cannot be added when they never
-  // happened at once.
-  const external = usage.external - externalBaseline;
-  if (heap + external > peak) peak = heap + external;
-  if (heap > peakHeapOnly) peakHeapOnly = heap;
-  if (external > peakExternalOnly) peakExternalOnly = external;
+  const delta = usage.heapUsed - baseline + (usage.external - externalBaseline);
+  if (delta > churn) churn = delta;
 }, 5);
 
 const iterations = scenario.iters * 8;
@@ -97,21 +120,19 @@ const measured = {
   driver: which,
   scenario: name,
   iterations,
-  // what the batch ever held at once - heap and off-heap together - and
-  // what it did not give back
+  // what it holds warm, what one call needs at once, what a batch
+  // churns through per call, and what the batch did not give back
   atRestKb: (atRest.heapUsed + atRest.external) / 1024,
+  peakKb,
+  perCallKb: 0, // filled in below
   wireKb,
   wireOutKb,
-  perCallKb: 0, // filled in below
-  peakKb: peak / 1024,
-  peakHeapOnlyKb: peakHeapOnly / 1024,
-  peakExternalOnlyKb: peakExternalOnly / 1024,
   retainedKb: retained / 1024,
   rssKb: process.memoryUsage().rss / 1024,
 };
-// the peak above a warm baseline is allocation churn, and it scales with
-// the batch, so it only means something per call
-measured.perCallKb = measured.peakKb / iterations;
+// the batch's high-water mark is the garbage it left behind between
+// collections, which only means anything divided by the calls that made it
+measured.perCallKb = churn / 1024 / iterations;
 console.log(JSON.stringify(measured));
 
 await close();
