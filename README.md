@@ -20,6 +20,11 @@ npm install drizzle-postgrejs drizzle-orm postgrejs
 `drizzle-orm` (>=0.44.6 <0.46.0) and `postgrejs` (>=3.11.0 <4) are peer dependencies. Node >=22,
 PostgreSQL 14 or later - 14 and 18 are what CI runs.
 
+The 0.45 line is what this targets. Drizzle's own 1.0 rewrites the driver seam - `PgPreparedQuery`
+becomes `PgBasePreparedQuery`, row mode moves from a flag to a method, type handling becomes a
+per-driver codec table - so a 1.0 driver will be a rewrite rather than an adaptation;
+[`doc/DRIVER-DESIGN.md`](doc/DRIVER-DESIGN.md) §10 has the detail.
+
 ## Quick start
 
 ```ts
@@ -303,18 +308,6 @@ The tests come in three kinds, and the split is deliberate:
 - `test/C-differential` - the same drizzle calls through this driver and through
   `drizzle-orm/node-postgres`, deep-compared. It is what catches a difference nobody thought to
   assert.
-
-## Status
-
-Complete. Selects, inserts, updates, deletes, RETURNING, relational queries, joins, transactions,
-savepoints, prepared statements, migrations and `db.execute()` all work against a live server, and
-drizzle's own suite passes in full on the PostgreSQL version it is written for, with nothing
-skipped.
-
-Drizzle itself is pre-1.0 and its 1.0 line rewrites the driver seam - `PgPreparedQuery` becomes
-`PgBasePreparedQuery`, row mode moves from a flag to a method, and type handling becomes a per-driver
-codec table. This package targets the 0.45 line; a 1.0 driver will be a rewrite rather than an
-adaptation. [`doc/DRIVER-DESIGN.md`](doc/DRIVER-DESIGN.md) §10 has the detail.
 
 ## License
 
