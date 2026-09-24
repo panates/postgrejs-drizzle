@@ -17,7 +17,7 @@ drizzle has no way to ask for.
 npm install drizzle-postgrejs drizzle-orm postgrejs
 ```
 
-`drizzle-orm` (>=0.44.6 <0.46.0) and `postgrejs` (>=3.10.1 <4) are peer dependencies. Node >=22,
+`drizzle-orm` (>=0.44.6 <0.46.0) and `postgrejs` (>=3.11.0 <4) are peer dependencies. Node >=22,
 PostgreSQL 14 or later - 14 and 18 are what CI runs.
 
 ## Quick start
@@ -218,7 +218,7 @@ Run it yourself with `scripts/run-drizzle-suite.sh`. It needs a server; without
 `PG_CONNECTION_STRING` it starts a `postgres:14` container on a free port and removes it afterwards.
 A weekly CI job runs the matrix of both drizzle versions against PostgreSQL 14 and 18.
 
-On top of that, 203 tests of this package's own - and a differential suite among them that runs every
+On top of that, 212 tests of this package's own - and a differential suite among them that runs every
 case through `drizzle-orm/node-postgres` as well and compares the two.
 
 ## What changes when you switch

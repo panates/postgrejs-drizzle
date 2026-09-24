@@ -6,7 +6,7 @@ server rather than read out of documentation; a claim that says "verified" has a
 and the tests under `test/` hold most of them to it.
 
 Measured against `drizzle-orm` 0.45.3 (npm `latest`) and `drizzle-orm@rc` 1.0.0-rc.4, PostgreJS
-3.10.1, and PostgreSQL 14.24 and 18.4. The recon round that opened this document ran on 0.45.2 and
+3.11.0, and PostgreSQL 14.24 and 18.4. The recon round that opened this document ran on 0.45.2 and
 PostgreJS 3.6.1, and where a number below names those, that is the run it came from. Line references
 are into the `drizzle-orm` git tree at tag `0.45.2`, path prefix `drizzle-orm/src/` - 0.45.3 changed
 nothing under `pg-core`.
@@ -459,7 +459,7 @@ rather than reshaped, and a caller who wants the exact decimal wants PostgreJS's
 rather than a double. All of them are pinned by tests in `test/B-live/types.spec.ts`, so the choice
 stays a decision.
 
-**Verified on the peer floor.** All 199 tests pass on PostgreJS 3.10.1, which is what the peer range
+**Verified on the peer floor.** All 212 tests pass on PostgreJS 3.11.0, which is what the peer range
 starts at, and drizzle's own suite scores 183 of 183 there - the same as the `node-postgres` control.
 
 `point` is the one addition and the one that is easy to miss: PostgreJS decodes it into a `Point`
