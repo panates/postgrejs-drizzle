@@ -126,6 +126,7 @@ function memoryTable(results) {
     [
       'Scenario',
       `held between calls (${CONTROL} / ${DRIVER})`,
+      `high-water under load (${CONTROL} / ${DRIVER})`,
       `allocated per call (${CONTROL} / ${DRIVER})`,
       `off the wire per call (${CONTROL} / ${DRIVER})`,
       `onto the wire per call (${CONTROL} / ${DRIVER})`,
@@ -140,6 +141,7 @@ function memoryTable(results) {
         // different number - a buffer a client grew and has not yet
         // handed back is not the same claim as one it keeps
         `${heldCell(control)} / ${heldCell(driver)}`,
+        `${mb(control.sustainedKb)} / ${mb(driver.sustainedKb)}`,
         `${kb(control.perCallKb)} / ${kb(driver.perCallKb)}`,
         `${kb(control.wireKb)} / ${kb(driver.wireKb)}`,
         `${kb(control.wireOutKb)} / ${kb(driver.wireOutKb)}`,
@@ -269,8 +271,24 @@ function reading(results) {
       b.driver.heldKb - b.control.heldKb - (a.driver.heldKb - a.control.heldKb),
   )[0];
   const peakGap = mb(Math.abs(grown.driver.peakKb - grown.control.peakKb));
-  const arrayWrite = writes.find(s => s.name.includes('int4[]'));
+  const sustainedLower = named.filter(
+    s => s.driver.sustainedKb < s.control.sustainedKb,
+  );
+  const sustainedHigher = named.filter(
+    s => s.driver.sustainedKb >= s.control.sustainedKb,
+  );
+  // `-29%` where PostgreJS needs less of it, `+25%` where it needs more
+  const sustainedSays = s => {
+    const change =
+      ((s.driver.sustainedKb - s.control.sustainedKb) / s.control.sustainedKb) *
+      100;
+    return `${s.name.split(' - ')[0]} ${change > 0 ? '+' : ''}${change.toFixed(0)}%`;
+  };
+  const decisive = named.every(
+    s => s.sustainedWins === 0 || s.sustainedWins === s.sustainedPairs,
+  );
   const blobWrite = writes.find(s => s.name.includes('bytea'));
+  const arrayWrite = writes.find(s => s.name.includes('int4[]'));
   const bulkWrite = writes.find(s => s.name.includes('500 rows'));
 
   const paragraphs = [
@@ -329,6 +347,37 @@ function reading(results) {
      them the second. The read rows shrink on both drivers, so it is only the writes the two of
      them answer differently.`,
 
+    `**Under sustained load the two separate, and not all one way.** The peak column collects
+     before every sample, so garbage a client leaves behind is gone before the number is read.
+     Measured without that collection - each scenario's own call count, no fewer than 100, three
+     paired repetitions - PostgreJS needs less on ${sustainedLower.length} of the ${named.length}
+     scenarios and more on ${sustainedHigher.length}. Less: ${list(
+       sustainedLower.map(sustainedSays),
+     )}. More: ${list(sustainedHigher.map(sustainedSays))}.${
+       decisive
+         ? ' Every one of those splits was unanimous across the paired runs.'
+         : ''
+     }`,
+
+    `**What decides it is the allocation column, not the buffer reuse.** The rows where PostgreJS
+     needs less are the ones where it hands back a large payload without building a large
+     intermediate - ${kbOrMb(bytes.driver.perCallKb)} a call against
+     ${kbOrMb(bytes.control.perCallKb)} on the 4MB \`bytea\` read, which is the hex string \`pg\`
+     has to materialise and it does not. The rows where it needs more are the ones where it builds
+     more per row, and the sustained figure follows that at a few hundred KB a call. Buffer reuse
+     is real - it is what the held column shows - but it only reaches this number where the
+     message being reused for is itself large.`,
+
+    `**One write goes the other way while sending fewer bytes.** ${arrayWrite.name.split(' - ')[0]}
+     needs ${mb(arrayWrite.driver.sustainedKb)} against ${mb(arrayWrite.control.sustainedKb)} and
+     sends ${kbOrMb(arrayWrite.driver.wireOutKb)} against
+     ${kbOrMb(arrayWrite.control.wireOutKb)}, and it read the same at 25, 50, 100 and 200 calls, so
+     it is not where the batch stops. PostgreJS renders the array literal as a string, writes that
+     into the connection's buffer, and then \`flush()\` copies the finished message out of it -
+     \`frontend.js\`'s \`setLengthAndFlush\` takes the copying default - which is one full pass over
+     a megabyte more than \`pg\` makes. Its own \`getCopyDataMessage\` already avoids exactly that,
+     handing the socket a header and the caller's bytes as two buffers to write corked.`,
+
     `**Why the payload rows separate.** PostgreJS reads and writes these columns in PostgreSQL's
      binary format where \`pg\` uses text. On the wire that is worth less than it sounds and depends
      on the values: binary costs 8 bytes an \`int4\` element whatever the number, text a byte a digit,
@@ -357,6 +406,7 @@ function document(results) {
   const by = name => results.scenarios.find(s => s.name.startsWith(name));
   const blobRead = speedup(by('bytea of 4MB'));
   const blobWrite = speedup(by('insert a 4MB bytea'));
+  const sustainedCalls = by('insert a 4MB bytea').sustainedCalls;
   return `# The same drizzle calls, on both drivers
 
 _Generated by \`npm run bench:report\` from the last \`npm run bench\`. Do not hand-edit - re-run the
@@ -400,6 +450,24 @@ buffer per connection grown to the largest message it has written, and the two p
 because of it. That buffer is reclaimed after five seconds of quiet - the same process holds
 ${mb(blobWrite.driver.idleHeldKb)} once the calls stop - so the held column is measured with the
 calls still coming and carries the idle figure beside it where the two differ.`)}
+
+${wrap(`What the peak cannot say at all is what a **run** needs, and it is blind to it by construction:
+it collects before every sample, so a client that allocates a fresh buffer per message has already
+had that buffer taken away before the number is read. That is real memory while it waits for the
+collector, and a process has to be able to hold it. The high-water column is therefore a separate
+pass with nothing forced inside the window - ${sustainedCalls} calls, three paired repetitions,
+median - and it separates the two where the peak reads level: on the 4MB \`bytea\` write PostgreJS
+needs ${mb(blobWrite.driver.sustainedKb)} against ${mb(blobWrite.control.sustainedKb)} while the
+peaks are within ${mb(Math.abs(blobWrite.driver.peakKb - blobWrite.control.peakKb))} of each other.
+Long enough to reach a steady collection cycle: swept at 25, 50, 100 and 200 calls the direction
+never changed on either of the two rows it was checked against.`)}
+
+${wrap(`RSS is sampled in the same pass and is **not** the column, because it did not measure this. It
+runs three to six times the live figure on both drivers - ${mb(blobWrite.control.sustainedRssKb)}
+against ${mb(blobWrite.driver.sustainedRssKb)} on that write - and it moves with V8's reserved heap
+and the allocator's retained pages rather than with what the client is holding; over a batch-length
+sweep it wandered by 80 MB on one driver while the live figure moved by 8. It is in
+\`benchmark/results/latest.json\` for anyone who wants it.`)}
 
 The allocation column understates for a different reason, and knowing by how much is worth more than
 the figure: a peak above a warm baseline counts only the garbage the collector had not reached yet. Measured in a

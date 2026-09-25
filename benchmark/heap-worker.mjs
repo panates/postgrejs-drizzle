@@ -10,13 +10,22 @@
  * spawned one at a time - so the figure is the whole cost of running that
  * scenario on that driver.
  *
- *   node --expose-gc benchmark/heap-worker.mjs <driver> <scenario> [idle]
+ *   node --expose-gc benchmark/heap-worker.mjs <driver> <scenario> [mode]
  *
  * With `idle` it measures only what the client keeps: once with the calls
  * still coming, and once after long enough that a client which caches a
  * buffer between calls has had time to hand it back. That second reading
  * costs a wall-clock wait, so it is a pass of its own rather than part of
  * every one.
+ *
+ * With `sustained` it measures the other thing the peak cannot say: the
+ * high-water mark of a run with **no forced collection inside it**, which
+ * is what the process actually has to be able to hold. A client that
+ * allocates a fresh buffer per message leaves that buffer as garbage, and
+ * garbage counts until the collector arrives; one that writes into a
+ * buffer it reuses leaves none. The marginal peak is blind to this by
+ * construction - it collects before every sample - so it reported level
+ * where a run reports a third less.
  *
  * It prints one JSON line and exits.
  */
@@ -92,6 +101,43 @@ const atRest = usedBytes();
  * and drops it, so it has nothing to give back and reads the same either
  * way - which is what makes the gap look like a leak until you wait.
  */
+/**
+ * What the process needs while the calls keep coming. Nothing is
+ * collected on purpose here: the question is how high it goes between the
+ * collections the runtime chooses, not how high one call goes above a
+ * clean heap.
+ *
+ * Long enough to reach a steady collection cycle - swept at 25, 50, 100
+ * and 200 calls, the `int4[]` write reads 77 MB against 92 at every
+ * length and the 4MB `bytea` write settles by 100, so the answer is not
+ * an artifact of where the batch stops.
+ */
+if (mode === 'sustained') {
+  const iterations = Math.max(scenario.iters * 8, 100);
+  let highest = 0;
+  let highestRss = 0;
+  const watch = setInterval(() => {
+    const usage = process.memoryUsage();
+    const used = usage.heapUsed + usage.external;
+    if (used > highest) highest = used;
+    if (usage.rss > highestRss) highestRss = usage.rss;
+  }, 1);
+  if (scenario.setup) await scenario.setup(db);
+  for (let i = 0; i < iterations; i++) await scenario.run(db, i);
+  clearInterval(watch);
+  console.log(
+    JSON.stringify({
+      driver: which,
+      scenario: name,
+      iterations,
+      sustainedKb: (highest - cold) / 1024,
+      sustainedRssKb: highestRss / 1024,
+    }),
+  );
+  await close();
+  process.exit(0);
+}
+
 if (mode === 'idle') {
   await new Promise(resolve => setTimeout(resolve, 6000));
   globalThis.gc();

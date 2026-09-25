@@ -33,12 +33,28 @@ more call adds to a client that is already warm, so a client holding a large rea
 for the next call precisely because it is holding one - which is why the memory table reports what
 each client grew by and kept, and why the two want reading together. Raised by postgrejs's own
 repository against this column, and measured here: on the 4MB `bytea` read, `pg` holds 7.7 MB and
-adds 24.1 MB for a call where PostgreJS holds 4.8 MB and adds 8.1 MB, so there it is not an artifact
+adds 24.1 MB for a call where PostgreJS holds 4.8 MB and adds 8.0 MB, so there it is not an artifact
 of holding more. On the 4MB `bytea` **write** it is exactly that: PostgreJS holds 4.7 MB where `pg`
 holds 586 KB, which is one send buffer per connection grown to the largest message it has written,
 and the two peaks come out level because of it. That buffer is reclaimed after five seconds of quiet
 - the same process holds 743 KB once the calls stop - so the held column is measured with the calls
 still coming and carries the idle figure beside it where the two differ.
+
+What the peak cannot say at all is what a **run** needs, and it is blind to it by construction: it
+collects before every sample, so a client that allocates a fresh buffer per message has already had
+that buffer taken away before the number is read. That is real memory while it waits for the
+collector, and a process has to be able to hold it. The high-water column is therefore a separate
+pass with nothing forced inside the window - 100 calls, three paired repetitions, median - and it
+separates the two where the peak reads level: on the 4MB `bytea` write PostgreJS needs 45.1 MB
+against 63.9 MB while the peaks are within 2.9 KB of each other. Long enough to reach a steady
+collection cycle: swept at 25, 50, 100 and 200 calls the direction never changed on either of the
+two rows it was checked against.
+
+RSS is sampled in the same pass and is **not** the column, because it did not measure this. It runs
+three to six times the live figure on both drivers - 358.4 MB against 339.8 MB on that write - and
+it moves with V8's reserved heap and the allocator's retained pages rather than with what the client
+is holding; over a batch-length sweep it wandered by 80 MB on one driver while the live figure moved
+by 8. It is in `benchmark/results/latest.json` for anyone who wants it.
 
 The allocation column understates for a different reason, and knowing by how much is worth more than
 the figure: a peak above a warm baseline counts only the garbage the collector had not reached yet. Measured in a
@@ -60,42 +76,42 @@ medians per call.
 
 | Scenario                                                                         | node-postgres<br>peak memory | postgrejs<br>peak memory    |                             |
 | -------------------------------------------------------------------------------- | ---------------------------- | --------------------------- | --------------------------- |
-| point read - one row by primary key                                              | 0.480 ms<br>0.0 KB           | **0.439 ms**<br>0.0 KB      | **1.09x**<br>under a sample |
-| page of 200 - nine columns, mixed types                                          | 1.050 ms<br>287 KB           | 1.050 ms<br>106 KB          | level<br>level              |
-| concurrent reads - 20 point reads at once, pool of 10                            | 1.790 ms<br>**525 KB**       | **1.738 ms**<br>551 KB      | **1.03x**<br>+5%            |
-| int4[] of 100k, full width - values that use the whole type                      | 35.985 ms<br>2.9 MB          | **9.187 ms**<br>**1.5 MB**  | **3.92x**<br>**-50%**       |
-| float8 of 5k rows, full width - eight bytes against seventeen significant digits | 2.025 ms<br>**336 KB**       | **1.628 ms**<br>633 KB      | **1.24x**<br>+89%           |
-| uuid of 5k rows - sixteen bytes against thirty-six characters                    | 2.261 ms<br>**243 KB**       | **2.020 ms**<br>522 KB      | **1.12x**<br>+115%          |
-| box of 5k rows - four float8s against coordinates that use them                  | 3.883 ms<br>1.6 MB           | **2.151 ms**<br>**400 KB**  | **1.81x**<br>**-75%**       |
-| bytea of 4MB - large enough to be the whole cost                                 | 51.829 ms<br>24.1 MB         | **22.843 ms**<br>**8.1 MB** | **2.27x**<br>**-67%**       |
+| point read - one row by primary key                                              | 0.438 ms<br>0.0 KB           | **0.401 ms**<br>0.0 KB      | **1.09x**<br>under a sample |
+| page of 200 - nine columns, mixed types                                          | 1.190 ms<br>167 KB           | **1.100 ms**<br>**100 KB**  | **1.08x**<br>**-40%**       |
+| concurrent reads - 20 point reads at once, pool of 10                            | 2.122 ms<br>**511 KB**       | 2.072 ms<br>567 KB          | level<br>+11%               |
+| int4[] of 100k, full width - values that use the whole type                      | 35.856 ms<br>2.9 MB          | **9.589 ms**<br>**1.5 MB**  | **3.74x**<br>**-49%**       |
+| float8 of 5k rows, full width - eight bytes against seventeen significant digits | 1.942 ms<br>**279 KB**       | **1.551 ms**<br>714 KB      | **1.25x**<br>+156%          |
+| uuid of 5k rows - sixteen bytes against thirty-six characters                    | 2.069 ms<br>**237 KB**       | 2.028 ms<br>526 KB          | level<br>+122%              |
+| box of 5k rows - four float8s against coordinates that use them                  | 4.004 ms<br>1.6 MB           | **2.252 ms**<br>**412 KB**  | **1.78x**<br>**-76%**       |
+| bytea of 4MB - large enough to be the whole cost                                 | 52.440 ms<br>24.1 MB         | **23.370 ms**<br>**8.0 MB** | **2.24x**<br>**-67%**       |
 
 ### Writing
 
 | Scenario                                                                       | node-postgres<br>peak memory | postgrejs<br>peak memory     |                             |
 | ------------------------------------------------------------------------------ | ---------------------------- | ---------------------------- | --------------------------- |
-| insert one row - six parameters                                                | 0.517 ms<br>0.0 KB           | **0.485 ms**<br>0.0 KB       | **1.06x**<br>under a sample |
-| insert 500 rows - one statement, 2500 parameters, values that fill their types | 7.758 ms<br>**4.9 MB**       | **6.607 ms**<br>5.1 MB       | **1.17x**<br>+4%            |
-| insert a 4MB bytea - one parameter, and binary on both sides                   | 25.649 ms<br>**8.0 MB**      | 25.096 ms<br>8.1 MB          | level<br>+0%                |
-| insert a 100k int4[] - one parameter, and text on both sides - see below       | 32.346 ms<br>29.7 MB         | **23.125 ms**<br>**12.4 MB** | **1.40x**<br>**-58%**       |
-| twenty inserts in a transaction - what a unit of work looks like               | 9.743 ms<br>**386 KB**       | 9.661 ms<br>518 KB           | level<br>+34%               |
+| insert one row - six parameters                                                | 0.423 ms<br>0.0 KB           | **0.394 ms**<br>0.0 KB       | **1.07x**<br>under a sample |
+| insert 500 rows - one statement, 2500 parameters, values that fill their types | 7.663 ms<br>**4.9 MB**       | **6.656 ms**<br>5.1 MB       | **1.15x**<br>+4%            |
+| insert a 4MB bytea - one parameter, and binary on both sides                   | 27.912 ms<br>8.0 MB          | **25.632 ms**<br>8.1 MB      | **1.09x**<br>level          |
+| insert a 100k int4[] - one parameter, and text on both sides - see below       | 35.762 ms<br>29.7 MB         | **25.297 ms**<br>**12.4 MB** | **1.41x**<br>**-58%**       |
+| twenty inserts in a transaction - what a unit of work looks like               | 8.282 ms<br>**387 KB**       | **8.094 ms**<br>518 KB       | **1.02x**<br>+34%           |
 
 And which driver actually won, pair by pair:
 
 | Scenario                        | pairs | postgrejs faster in | odds of that by luck |
 | ------------------------------- | ----- | ------------------- | -------------------- |
 | point read                      | 101   | 78                  | < 1 in 10^7          |
-| page of 200                     | 101   | 50                  | not distinguishable  |
-| concurrent reads                | 61    | 44                  | < 1 in 10^3          |
+| page of 200                     | 101   | 61                  | p = 0.046            |
+| concurrent reads                | 61    | 32                  | not distinguishable  |
 | int4[] of 100k, full width      | 41    | 41                  | < 1 in 10^12         |
 | float8 of 5k rows, full width   | 61    | 61                  | < 1 in 10^18         |
-| uuid of 5k rows                 | 61    | 48                  | < 1 in 10^5          |
+| uuid of 5k rows                 | 61    | 36                  | not distinguishable  |
 | box of 5k rows                  | 61    | 61                  | < 1 in 10^18         |
 | bytea of 4MB                    | 41    | 41                  | < 1 in 10^12         |
-| insert one row                  | 101   | 68                  | < 1 in 10^3          |
-| insert 500 rows                 | 61    | 54                  | < 1 in 10^9          |
-| insert a 4MB bytea              | 41    | 27                  | not distinguishable  |
-| insert a 100k int4[]            | 41    | 41                  | < 1 in 10^12         |
-| twenty inserts in a transaction | 61    | 34                  | not distinguishable  |
+| insert one row                  | 101   | 82                  | < 1 in 10^9          |
+| insert 500 rows                 | 61    | 58                  | < 1 in 10^13         |
+| insert a 4MB bytea              | 41    | 30                  | p = 0.004            |
+| insert a 100k int4[]            | 41    | 40                  | < 1 in 10^10         |
+| twenty inserts in a transaction | 61    | 42                  | p = 0.004            |
 
 The memory line of that last column is a percentage rather than a multiple, and it is postgrejs
 against `node-postgres`: `-51%` is half again less held, `+29%` is more.
@@ -109,16 +125,16 @@ pg's 4MB column as 0.4 MB while it is really holding 49 MB of it.
 | Scenario                        | pairs | postgrejs lower in | odds of that by luck |
 | ------------------------------- | ----- | ------------------ | -------------------- |
 | point read                      | 15    | 1                  | < 1 in 10^3          |
-| page of 200                     | 15    | 10                 | not distinguishable  |
-| concurrent reads                | 15    | 2                  | p = 0.007            |
+| page of 200                     | 15    | 12                 | p = 0.035            |
+| concurrent reads                | 15    | 1                  | < 1 in 10^3          |
 | int4[] of 100k, full width      | 15    | 15                 | < 1 in 10^4          |
-| float8 of 5k rows, full width   | 15    | 1                  | < 1 in 10^3          |
+| float8 of 5k rows, full width   | 15    | 0                  | < 1 in 10^4          |
 | uuid of 5k rows                 | 15    | 0                  | < 1 in 10^4          |
 | box of 5k rows                  | 15    | 15                 | < 1 in 10^4          |
 | bytea of 4MB                    | 15    | 15                 | < 1 in 10^4          |
-| insert one row                  | 15    | 2                  | p = 0.007            |
+| insert one row                  | 15    | 3                  | p = 0.035            |
 | insert 500 rows                 | 15    | 0                  | < 1 in 10^4          |
-| insert a 4MB bytea              | 15    | 3                  | p = 0.035            |
+| insert a 4MB bytea              | 15    | 4                  | not distinguishable  |
 | insert a 100k int4[]            | 15    | 15                 | < 1 in 10^4          |
 | twenty inserts in a transaction | 15    | 0                  | < 1 in 10^4          |
 
@@ -127,21 +143,21 @@ number; what a single call allocates and then throws away is another, and it is 
 peak is made of on a small query - the peak above a warm baseline is garbage waiting for the
 collector, and it grows with the size of the batch rather than saying anything about the driver:
 
-| Scenario                        | held between calls (node-postgres / postgrejs) | allocated per call (node-postgres / postgrejs) | off the wire per call (node-postgres / postgrejs) | onto the wire per call (node-postgres / postgrejs) |
-| ------------------------------- | ---------------------------------------------- | ---------------------------------------------- | ------------------------------------------------- | -------------------------------------------------- |
-| point read                      | 679 KB / 820 KB                                | 29.6 KB / 31.3 KB                              | 0.4 KB / 0.2 KB                                   | 0.1 KB / 0.1 KB                                    |
-| page of 200                     | 920 KB / 1019 KB                               | 361.0 KB / 340.9 KB                            | 29.6 KB / 35.5 KB                                 | 0.1 KB / 0.1 KB                                    |
-| concurrent reads                | 1.1 MB / 1.4 MB                                | 474.5 KB / 561.7 KB                            | 7.8 KB / 4.0 KB                                   | 2.0 KB / 1.1 KB                                    |
-| int4[] of 100k, full width      | 2.4 MB → 1.5 MB idle / 1.5 MB → 745 KB idle    | 3.3 MB / 2.3 MB                                | 1.0 MB / 781.3 KB                                 | 0.1 KB / 0.0 KB                                    |
-| float8 of 5k rows, full width   | 1.5 MB / 1.1 MB                                | 765.8 KB / 870.6 KB                            | 137.6 KB / 92.8 KB                                | 0.1 KB / 0.0 KB                                    |
-| uuid of 5k rows                 | 1.9 MB → 1.2 MB idle / 1.3 MB                  | 817.0 KB / 953.4 KB                            | 229.6 KB / 131.9 KB                               | 0.1 KB / 0.0 KB                                    |
-| box of 5k rows                  | 2.3 MB → 1.5 MB idle / 1.7 MB → 871 KB idle    | 879.9 KB / 1016.0 KB                           | 423.1 KB / 210.0 KB                               | 0.1 KB / 0.0 KB                                    |
-| bytea of 4MB                    | 7.7 MB → 3.7 MB idle / 4.8 MB → 816 KB idle    | 2.0 MB / 351.0 KB                              | 8.0 MB / 4.0 MB                                   | 0.1 KB / 0.0 KB                                    |
-| insert one row                  | 644 KB / 803 KB                                | 26.3 KB / 33.8 KB                              | 0.1 KB / 0.0 KB                                   | 0.3 KB / 0.1 KB                                    |
-| insert 500 rows                 | 665 KB / 958 KB                                | 1.9 MB / 1.7 MB                                | 0.0 KB / 0.0 KB                                   | 128.1 KB / 81.7 KB                                 |
-| insert a 4MB bytea              | 586 KB / 4.7 MB → 743 KB idle                  | 2.6 MB / 1.0 MB                                | 0.0 KB / 0.0 KB                                   | 4.0 MB / 4.0 MB                                    |
-| insert a 100k int4[]            | 591 KB / 1.7 MB → 724 KB idle                  | 2.5 MB / 3.1 MB                                | 0.0 KB / 0.0 KB                                   | 1.2 MB / 1.0 MB                                    |
-| twenty inserts in a transaction | 760 KB / 983 KB                                | 366.4 KB / 472.3 KB                            | 0.8 KB / 0.6 KB                                   | 2.8 KB / 1.1 KB                                    |
+| Scenario                        | held between calls (node-postgres / postgrejs) | high-water under load (node-postgres / postgrejs) | allocated per call (node-postgres / postgrejs) | off the wire per call (node-postgres / postgrejs) | onto the wire per call (node-postgres / postgrejs) |
+| ------------------------------- | ---------------------------------------------- | ------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------- | -------------------------------------------------- |
+| point read                      | 679 KB / 820 KB                                | 12.5 MB / 13.2 MB                                 | 29.6 KB / 31.2 KB                              | 0.4 KB / 0.2 KB                                   | 0.1 KB / 0.1 KB                                    |
+| page of 200                     | 920 KB / 1012 KB                               | 58.2 MB / 54.7 MB                                 | 363.3 KB / 341.9 KB                            | 29.6 KB / 35.5 KB                                 | 0.1 KB / 0.1 KB                                    |
+| concurrent reads                | 1.1 MB / 1.4 MB                                | 46.5 MB / 54.0 MB                                 | 482.3 KB / 561.0 KB                            | 7.8 KB / 4.0 KB                                   | 2.0 KB / 1.1 KB                                    |
+| int4[] of 100k, full width      | 2.4 MB → 1.5 MB idle / 1.5 MB → 745 KB idle    | 81.4 MB / 55.8 MB                                 | 3.3 MB / 2.2 MB                                | 1.0 MB / 781.3 KB                                 | 0.1 KB / 0.0 KB                                    |
+| float8 of 5k rows, full width   | 1.5 MB / 1.1 MB                                | 62.4 MB / 74.9 MB                                 | 763.1 KB / 836.9 KB                            | 137.6 KB / 92.8 KB                                | 0.1 KB / 0.0 KB                                    |
+| uuid of 5k rows                 | 1.9 MB → 1.2 MB idle / 1.4 MB → 872 KB idle    | 67.7 MB / 80.9 MB                                 | 818.1 KB / 924.4 KB                            | 229.6 KB / 131.9 KB                               | 0.1 KB / 0.0 KB                                    |
+| box of 5k rows                  | 2.3 MB → 1.5 MB idle / 1.7 MB → 864 KB idle    | 71.1 MB / 84.8 MB                                 | 882.3 KB / 1.0 MB                              | 423.2 KB / 210.0 KB                               | 0.1 KB / 0.0 KB                                    |
+| bytea of 4MB                    | 7.7 MB → 3.7 MB idle / 4.8 MB → 816 KB idle    | 60.0 MB / 45.8 MB                                 | 2.0 MB / 348.2 KB                              | 8.0 MB / 4.0 MB                                   | 0.1 KB / 0.0 KB                                    |
+| insert one row                  | 644 KB / 803 KB                                | 11.1 MB / 14.2 MB                                 | 26.3 KB / 33.7 KB                              | 0.1 KB / 0.0 KB                                   | 0.3 KB / 0.1 KB                                    |
+| insert 500 rows                 | 665 KB / 958 KB                                | 61.1 MB / 58.5 MB                                 | 1.9 MB / 1.7 MB                                | 0.0 KB / 0.0 KB                                   | 128.1 KB / 81.7 KB                                 |
+| insert a 4MB bytea              | 586 KB / 4.7 MB → 743 KB idle                  | 63.9 MB / 45.1 MB                                 | 2.6 MB / 990.5 KB                              | 0.0 KB / 0.0 KB                                   | 4.0 MB / 4.0 MB                                    |
+| insert a 100k int4[]            | 591 KB / 1.7 MB → 724 KB idle                  | 61.0 MB / 76.5 MB                                 | 2.5 MB / 3.1 MB                                | 0.0 KB / 0.0 KB                                   | 1.2 MB / 1.0 MB                                    |
+| twenty inserts in a transaction | 760 KB / 983 KB                                | 35.4 MB / 45.8 MB                                 | 363.6 KB / 470.2 KB                            | 0.8 KB / 0.6 KB                                   | 2.8 KB / 1.1 KB                                    |
 
 The per-call column is the steadier of the two. A peak is whatever was alive at one moment, and on
 the payload rows that depends on when the collector happened to run - a `bytea` is a `Buffer`, and a
@@ -152,13 +168,13 @@ is not worth quoting to two figures.
 
 ## Reading them
 
-**Reading is where the payload decides it.** int4[] of 100k, full width is 3.9x, box of 5k rows is
-1.8x and bytea of 4MB is 2.3x. The ordinary shapes move much less - point read 1.09x, page of 200
-level, concurrent reads 1.03x, float8 of 5k rows, full width 1.24x and uuid of 5k rows 1.12x -
+**Reading is where the payload decides it.** int4[] of 100k, full width is 3.7x, box of 5k rows is
+1.8x and bytea of 4MB is 2.2x. The ordinary shapes move much less - point read 1.09x, page of 200
+1.08x, concurrent reads level, float8 of 5k rows, full width 1.25x and uuid of 5k rows level -
 because a short result is mostly a round trip, and a round trip is the same round trip.
 
-**Writing moves less, and one row goes the other way.** insert one row 1.06x, insert 500 rows 1.17x,
-insert a 4MB bytea level, insert a 100k int4[] 1.40x and twenty inserts in a transaction level. The
+**Writing moves less, and one row goes the other way.** insert one row 1.07x, insert 500 rows 1.15x,
+insert a 4MB bytea 1.09x, insert a 100k int4[] 1.41x and twenty inserts in a transaction 1.02x. The
 server does the work in a write - parsing, planning, the heap, the WAL - so a client can only save
 on its own share of it, and that share is smaller than the decoding it saves on a read.
 
@@ -167,7 +183,7 @@ on its own share of it, and that share is smaller than the decoding it saves on 
 text. The array is text on purpose - PostgreJS stopped declaring an element type for an array of
 numbers because `[1, 2]` is one of six array types depending on where it lands and they have no
 casts between them, so declaring `int4[]` broke four of the six. With identical bytes going out,
-what separates the two is the writing of the literal, and that row has moved twice: it was 1.40x
+what separates the two is the writing of the literal, and that row has moved twice: it was 1.41x
 after PostgreJS stopped quoting and re-escaping every element of an array it writes, and was 1.12x
 to `pg` before. Reported from here rather than worked around, measured there, fixed there.
 
@@ -177,23 +193,47 @@ the server is handed the whole text on every call. PostgreJS names it once and s
 Execute after that.
 
 **Memory splits by size, not by direction.** Where the payload is large PostgreJS holds less of it:
-int4[] of 100k, full width peaks at 1.5 MB against 2.9 MB, box of 5k rows peaks at 400 KB against
-1.6 MB, bytea of 4MB peaks at 8.1 MB against 24.1 MB and insert a 100k int4[] peaks at 12.4 MB
-against 29.7 MB. Everywhere else it allocates more per call - 6 of the 13 scenarios - and the
-distinction that matters is that this is garbage rather than growth: between calls the two sit
-within a few hundred KB of each other on every scenario but the large writes. Measured over 100, 400
-and 1600 calls of a point read the gap scales with the call count and the between-calls figure does
-not move, which is what says churn rather than a structure being held.
+page of 200 peaks at 100 KB against 167 KB, int4[] of 100k, full width peaks at 1.5 MB against 2.9
+MB, box of 5k rows peaks at 412 KB against 1.6 MB, bytea of 4MB peaks at 8.0 MB against 24.1 MB and
+insert a 100k int4[] peaks at 12.4 MB against 29.7 MB. Everywhere else it allocates more per call -
+5 of the 13 scenarios - and the distinction that matters is that this is garbage rather than growth:
+between calls the two sit within a few hundred KB of each other on every scenario but the large
+writes. Measured over 100, 400 and 1600 calls of a point read the gap scales with the call count and
+the between-calls figure does not move, which is what says churn rather than a structure being held.
 
 **And the large writes are a buffer, not growth.** insert a 4MB bytea leaves PostgreJS holding 4.7
 MB where `pg` holds 586 KB, which reads as the one place it keeps materially more - and it is one
 buffer per connection, grown to the largest message it has had to write and handed back after five
 seconds of quiet. Waited out, the same process holds 743 KB - where `pg`, which builds a fresh
 buffer for each message and drops it, has nothing to give back and reads within a few KB of itself
-either way. That is also why the two peak within 2.6 KB of each other on that row while one of them
+either way. That is also why the two peak within 2.9 KB of each other on that row while one of them
 appears to be holding 4.1 MB more. Which number is the right one depends on the question: under
 sustained writes it is the first, for a process that goes quiet between them the second. The read
 rows shrink on both drivers, so it is only the writes the two of them answer differently.
+
+**Under sustained load the two separate, and not all one way.** The peak column collects before
+every sample, so garbage a client leaves behind is gone before the number is read. Measured without
+that collection - each scenario's own call count, no fewer than 100, three paired repetitions -
+PostgreJS needs less on 5 of the 13 scenarios and more on 8. Less: page of 200 -6%, int4[] of 100k,
+full width -31%, bytea of 4MB -24%, insert 500 rows -4% and insert a 4MB bytea -30%. More: point
+read +6%, concurrent reads +16%, float8 of 5k rows, full width +20%, uuid of 5k rows +20%, box of 5k
+rows +19%, insert one row +28%, insert a 100k int4[] +25% and twenty inserts in a transaction +29%.
+Every one of those splits was unanimous across the paired runs.
+
+**What decides it is the allocation column, not the buffer reuse.** The rows where PostgreJS needs
+less are the ones where it hands back a large payload without building a large intermediate - 348.2
+KB a call against 2.0 MB on the 4MB `bytea` read, which is the hex string `pg` has to materialise
+and it does not. The rows where it needs more are the ones where it builds more per row, and the
+sustained figure follows that at a few hundred KB a call. Buffer reuse is real - it is what the held
+column shows - but it only reaches this number where the message being reused for is itself large.
+
+**One write goes the other way while sending fewer bytes.** insert a 100k int4[] needs 76.5 MB
+against 61.0 MB and sends 1.0 MB against 1.2 MB, and it read the same at 25, 50, 100 and 200 calls,
+so it is not where the batch stops. PostgreJS renders the array literal as a string, writes that
+into the connection's buffer, and then `flush()` copies the finished message out of it -
+`frontend.js`'s `setLengthAndFlush` takes the copying default - which is one full pass over a
+megabyte more than `pg` makes. Its own `getCopyDataMessage` already avoids exactly that, handing the
+socket a header and the caller's bytes as two buffers to write corked.
 
 **Why the payload rows separate.** PostgreJS reads and writes these columns in PostgreSQL's binary
 format where `pg` uses text. On the wire that is worth less than it sounds and depends on the
@@ -205,7 +245,7 @@ MB.
 
 **What it is winning is mostly the parse, not the bytes.** The text path materialises the whole
 value as a string and walks it; the binary path reads it out of the buffer it already has. That is
-also why it allocates 2.3 MB a call against 3.3 MB on the array, and why the single-digit case -
+also why it allocates 2.2 MB a call against 3.3 MB on the array, and why the single-digit case -
 where it pulls four times the bytes `pg` does - was still not behind when it was measured.
 
 **Where it reaches you.** Through drizzle, these are `bytea` columns, array columns, and anything

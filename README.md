@@ -12,9 +12,9 @@ everything above it stays the same - your schema, your queries, your migrations.
 <!-- bench:intro -->
 
 It is faster where it counts, and it holds far less memory doing it. A 4MB `bytea` comes back in
-22.8 ms against 51.8 ms, and at 8.1 MB against 24.1 MB - `pg` holds that column as hex text, twice
+23.4 ms against 52.4 ms, and at 8.0 MB against 24.1 MB - `pg` holds that column as hex text, twice
 the size, off the JS heap where a heap figure alone cannot see it. A 100k-element `int4[]` runs
-between 3.9x and 3.9x depending on how much of the type its values use, at 1.5 MB against 2.9 MB on
+between 3.7x and 3.7x depending on how much of the type its values use, at 1.5 MB against 2.9 MB on
 the widest of them - the range is quoted rather than a single figure because the values decide it,
 not the driver. Ordinary queries gain less and gain it repeatably: a point read is the faster of the
 two in 78 of 101 alternated pairs. All of it measured through drizzle against
@@ -131,7 +131,7 @@ schema, the same queries, the same migrations. What you get for it:
 
 <!-- bench:payload -->
 
-- **Faster where the payload is large** - 2.3x on a 4MB `bytea`, and 3.9x to 3.9x on a
+- **Faster where the payload is large** - 2.2x on a 4MB `bytea`, and 3.7x to 3.7x on a
   100k-element `int4[]` according to how much of the type its values use, on a fraction of the
   memory, because the values arrive in PostgreSQL's binary format rather than as text to be parsed.
 
@@ -148,19 +148,19 @@ schema, the same queries, the same migrations. What you get for it:
 
 | Scenario                                                                         | node-postgres<br>peak memory | postgrejs<br>peak memory     |                             |
 | -------------------------------------------------------------------------------- | ---------------------------- | ---------------------------- | --------------------------- |
-| point read - one row by primary key                                              | 0.480 ms<br>0.0 KB           | **0.439 ms**<br>0.0 KB       | **1.09x**<br>under a sample |
-| page of 200 - nine columns, mixed types                                          | 1.050 ms<br>287 KB           | 1.050 ms<br>106 KB           | level<br>level              |
-| concurrent reads - 20 point reads at once, pool of 10                            | 1.790 ms<br>**525 KB**       | **1.738 ms**<br>551 KB       | **1.03x**<br>+5%            |
-| int4[] of 100k, full width - values that use the whole type                      | 35.985 ms<br>2.9 MB          | **9.187 ms**<br>**1.5 MB**   | **3.92x**<br>**-50%**       |
-| float8 of 5k rows, full width - eight bytes against seventeen significant digits | 2.025 ms<br>**336 KB**       | **1.628 ms**<br>633 KB       | **1.24x**<br>+89%           |
-| uuid of 5k rows - sixteen bytes against thirty-six characters                    | 2.261 ms<br>**243 KB**       | **2.020 ms**<br>522 KB       | **1.12x**<br>+115%          |
-| box of 5k rows - four float8s against coordinates that use them                  | 3.883 ms<br>1.6 MB           | **2.151 ms**<br>**400 KB**   | **1.81x**<br>**-75%**       |
-| bytea of 4MB - large enough to be the whole cost                                 | 51.829 ms<br>24.1 MB         | **22.843 ms**<br>**8.1 MB**  | **2.27x**<br>**-67%**       |
-| insert one row - six parameters                                                  | 0.517 ms<br>0.0 KB           | **0.485 ms**<br>0.0 KB       | **1.06x**<br>under a sample |
-| insert 500 rows - one statement, 2500 parameters, values that fill their types   | 7.758 ms<br>**4.9 MB**       | **6.607 ms**<br>5.1 MB       | **1.17x**<br>+4%            |
-| insert a 4MB bytea - one parameter, and binary on both sides                     | 25.649 ms<br>**8.0 MB**      | 25.096 ms<br>8.1 MB          | level<br>+0%                |
-| insert a 100k int4[] - one parameter, and text on both sides - see below         | 32.346 ms<br>29.7 MB         | **23.125 ms**<br>**12.4 MB** | **1.40x**<br>**-58%**       |
-| twenty inserts in a transaction - what a unit of work looks like                 | 9.743 ms<br>**386 KB**       | 9.661 ms<br>518 KB           | level<br>+34%               |
+| point read - one row by primary key                                              | 0.438 ms<br>0.0 KB           | **0.401 ms**<br>0.0 KB       | **1.09x**<br>under a sample |
+| page of 200 - nine columns, mixed types                                          | 1.190 ms<br>167 KB           | **1.100 ms**<br>**100 KB**   | **1.08x**<br>**-40%**       |
+| concurrent reads - 20 point reads at once, pool of 10                            | 2.122 ms<br>**511 KB**       | 2.072 ms<br>567 KB           | level<br>+11%               |
+| int4[] of 100k, full width - values that use the whole type                      | 35.856 ms<br>2.9 MB          | **9.589 ms**<br>**1.5 MB**   | **3.74x**<br>**-49%**       |
+| float8 of 5k rows, full width - eight bytes against seventeen significant digits | 1.942 ms<br>**279 KB**       | **1.551 ms**<br>714 KB       | **1.25x**<br>+156%          |
+| uuid of 5k rows - sixteen bytes against thirty-six characters                    | 2.069 ms<br>**237 KB**       | 2.028 ms<br>526 KB           | level<br>+122%              |
+| box of 5k rows - four float8s against coordinates that use them                  | 4.004 ms<br>1.6 MB           | **2.252 ms**<br>**412 KB**   | **1.78x**<br>**-76%**       |
+| bytea of 4MB - large enough to be the whole cost                                 | 52.440 ms<br>24.1 MB         | **23.370 ms**<br>**8.0 MB**  | **2.24x**<br>**-67%**       |
+| insert one row - six parameters                                                  | 0.423 ms<br>0.0 KB           | **0.394 ms**<br>0.0 KB       | **1.07x**<br>under a sample |
+| insert 500 rows - one statement, 2500 parameters, values that fill their types   | 7.663 ms<br>**4.9 MB**       | **6.656 ms**<br>5.1 MB       | **1.15x**<br>+4%            |
+| insert a 4MB bytea - one parameter, and binary on both sides                     | 27.912 ms<br>8.0 MB          | **25.632 ms**<br>8.1 MB      | **1.09x**<br>level          |
+| insert a 100k int4[] - one parameter, and text on both sides - see below         | 35.762 ms<br>29.7 MB         | **25.297 ms**<br>**12.4 MB** | **1.41x**<br>**-58%**       |
+| twenty inserts in a transaction - what a unit of work looks like                 | 8.282 ms<br>**387 KB**       | **8.094 ms**<br>518 KB       | **1.02x**<br>+34%           |
 
 `drizzle-orm` 0.45.3, `postgrejs` 3.11.1, PostgreSQL on loopback, Node 24.15.0. Medians; how that
 was measured and how much each row can bear are in [How the numbers were
@@ -188,18 +188,18 @@ does not drift is *which* of the two won each pair, so that is counted separatel
 | Scenario                        | pairs | postgrejs faster in | odds of that by luck |
 | ------------------------------- | ----- | ------------------- | -------------------- |
 | point read                      | 101   | 78                  | < 1 in 10^7          |
-| page of 200                     | 101   | 50                  | not distinguishable  |
-| concurrent reads                | 61    | 44                  | < 1 in 10^3          |
+| page of 200                     | 101   | 61                  | p = 0.046            |
+| concurrent reads                | 61    | 32                  | not distinguishable  |
 | int4[] of 100k, full width      | 41    | 41                  | < 1 in 10^12         |
 | float8 of 5k rows, full width   | 61    | 61                  | < 1 in 10^18         |
-| uuid of 5k rows                 | 61    | 48                  | < 1 in 10^5          |
+| uuid of 5k rows                 | 61    | 36                  | not distinguishable  |
 | box of 5k rows                  | 61    | 61                  | < 1 in 10^18         |
 | bytea of 4MB                    | 41    | 41                  | < 1 in 10^12         |
-| insert one row                  | 101   | 68                  | < 1 in 10^3          |
-| insert 500 rows                 | 61    | 54                  | < 1 in 10^9          |
-| insert a 4MB bytea              | 41    | 27                  | not distinguishable  |
-| insert a 100k int4[]            | 41    | 41                  | < 1 in 10^12         |
-| twenty inserts in a transaction | 61    | 34                  | not distinguishable  |
+| insert one row                  | 101   | 82                  | < 1 in 10^9          |
+| insert 500 rows                 | 61    | 58                  | < 1 in 10^13         |
+| insert a 4MB bytea              | 41    | 30                  | p = 0.004            |
+| insert a 100k int4[]            | 41    | 40                  | < 1 in 10^10         |
+| twenty inserts in a transaction | 61    | 42                  | p = 0.004            |
 
 <!-- /bench:signtest -->
 
@@ -212,8 +212,8 @@ rows say "not distinguishable" and are printed that way rather than rounded into
 <!-- bench:binary -->
 
 Result columns arrive in PostgreSQL's binary format and are decoded per type, where `pg` asks for
-text and parses it. On bulk that is the whole difference: a 100k-element `int4[]` costs 9.2 ms and
-1.5 MB here against 36.0 ms and 2.9 MB, because the text path has to materialise the array literal
+text and parses it. On bulk that is the whole difference: a 100k-element `int4[]` costs 9.6 ms and
+1.5 MB here against 35.9 ms and 2.9 MB, because the text path has to materialise the array literal
 as one string before it can parse it.
 
 <!-- /bench:binary -->

@@ -39,6 +39,7 @@ const arg = (name, fallback) => {
 
 const PAIRS = Number(arg('pairs', 0)); // 0: each scenario's own
 const HEAP_PAIRS = Number(arg('heap-pairs', 15));
+const SUSTAINED_PAIRS = Number(arg('sustained-pairs', 3));
 const ONLY = arg('scenario', 'all');
 /**
  * One timed batch. Nothing is sampled while it runs: polling
@@ -86,6 +87,23 @@ async function idleHeapInChild(scenario, driver) {
   );
   const { idleHeldKb } = JSON.parse(stdout);
   return idleHeldKb;
+}
+
+/**
+ * The high-water mark of a run with nothing collected inside it - what
+ * the process has to be able to hold while the calls keep coming, which
+ * is a different question from what one call adds to a clean heap and
+ * answers it differently. Paired and alternated like the timings, three
+ * repetitions, median: fewer than the timings because the splits it
+ * produces are 9-0 rather than close.
+ */
+async function sustainedInChild(scenario, driver) {
+  const { stdout } = await run(
+    process.execPath,
+    ['--expose-gc', HEAP_WORKER, driver, scenario.name, 'sustained'],
+    { env: process.env },
+  );
+  return JSON.parse(stdout);
 }
 
 const median = xs => {
@@ -224,6 +242,24 @@ async function main() {
     for (const name of names)
       idleHeld[name] = await idleHeapInChild(scenario, name);
 
+    const sustained = { [names[0]]: [], [names[1]]: [] };
+    const sustainedRss = { [names[0]]: [], [names[1]]: [] };
+    let sustainedCalls = 0;
+    let sustainedWins = 0;
+    for (let pair = 0; pair < SUSTAINED_PAIRS; pair++) {
+      const order = pair % 2 ? [names[1], names[0]] : names;
+      const measured = {};
+      for (const name of order)
+        measured[name] = await sustainedInChild(scenario, name);
+      for (const name of names) {
+        sustained[name].push(measured[name].sustainedKb);
+        sustainedRss[name].push(measured[name].sustainedRssKb);
+        sustainedCalls = measured[name].iterations;
+      }
+      if (measured[names[1]].sustainedKb < measured[names[0]].sustainedKb)
+        sustainedWins++;
+    }
+
     results.push({
       scenario,
       pairs,
@@ -231,6 +267,9 @@ async function main() {
       p: signTest(wins, pairs),
       heapPairs: HEAP_PAIRS,
       memoryCalls,
+      sustainedPairs: SUSTAINED_PAIRS,
+      sustainedCalls,
+      sustainedWins,
       heapWins,
       heapP: signTest(heapWins, HEAP_PAIRS),
       rows: names.map(name => ({
@@ -243,6 +282,8 @@ async function main() {
         perCallHiKb: Math.max(...churn[name]),
         heldKb: median(held[name]),
         idleHeldKb: idleHeld[name],
+        sustainedKb: median(sustained[name]),
+        sustainedRssKb: median(sustainedRss[name]),
         peakKb: median(peaks[name]),
         wireKb: median(wire[name]),
         wireOutKb: median(wireOut[name]),
@@ -291,6 +332,9 @@ async function main() {
             memoryCalls,
             heapWins,
             heapP,
+            sustainedPairs,
+            sustainedCalls,
+            sustainedWins,
             rows,
           }) => ({
             name: scenario.name,
@@ -304,6 +348,9 @@ async function main() {
             memoryCalls,
             heapWins,
             heapP,
+            sustainedPairs,
+            sustainedCalls,
+            sustainedWins,
             rows,
           }),
         ),
