@@ -73,6 +73,21 @@ async function heapInChild(scenario, driver) {
   return { heldKb, perCallKb, peakKb, wireKb, wireOutKb, iterations };
 }
 
+/**
+ * What the same client still holds once the calls stop. One run per
+ * driver per scenario rather than one per pair: it is a wall-clock wait,
+ * and unlike the peak it does not move between pairs.
+ */
+async function idleHeapInChild(scenario, driver) {
+  const { stdout } = await run(
+    process.execPath,
+    ['--expose-gc', HEAP_WORKER, driver, scenario.name, 'idle'],
+    { env: process.env },
+  );
+  const { idleHeldKb } = JSON.parse(stdout);
+  return idleHeldKb;
+}
+
 const median = xs => {
   const s = [...xs].sort((a, b) => a - b);
   const m = s.length >> 1;
@@ -205,6 +220,10 @@ async function main() {
       if (measured[names[1]].peakKb < measured[names[0]].peakKb) heapWins++;
     }
 
+    const idleHeld = {};
+    for (const name of names)
+      idleHeld[name] = await idleHeapInChild(scenario, name);
+
     results.push({
       scenario,
       pairs,
@@ -223,6 +242,7 @@ async function main() {
         perCallLoKb: Math.min(...churn[name]),
         perCallHiKb: Math.max(...churn[name]),
         heldKb: median(held[name]),
+        idleHeldKb: idleHeld[name],
         peakKb: median(peaks[name]),
         wireKb: median(wire[name]),
         wireOutKb: median(wireOut[name]),

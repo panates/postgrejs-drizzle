@@ -107,12 +107,25 @@ function percent(settled, control, driver) {
   return change < 0 ? `**${text}**` : text;
 }
 
+/**
+ * `4.7 MB` when a client keeps it, `4.7 MB -> 0.7 idle` when it hands it
+ * back. Only written where the two differ by enough to be a fact about
+ * the client rather than about a collection that happened to run.
+ */
+function heldCell(row) {
+  const shown = mb(row.heldKb);
+  if (row.idleHeldKb == null) return shown;
+  const given = row.heldKb - row.idleHeldKb;
+  if (given < 512 || given / row.heldKb < 0.25) return shown;
+  return `${shown} \u2192 ${mb(row.idleHeldKb)} idle`;
+}
+
 /** What a driver holds warm, and what one call throws away. */
 function memoryTable(results) {
   return table(
     [
       'Scenario',
-      `held warm (${CONTROL} / ${DRIVER})`,
+      `held between calls (${CONTROL} / ${DRIVER})`,
       `allocated per call (${CONTROL} / ${DRIVER})`,
       `off the wire per call (${CONTROL} / ${DRIVER})`,
       `onto the wire per call (${CONTROL} / ${DRIVER})`,
@@ -123,7 +136,10 @@ function memoryTable(results) {
         value >= 1024 ? mb(value) : `${value.toFixed(1)} KB`;
       return [
         scenario.name,
-        `${mb(control.heldKb)} / ${mb(driver.heldKb)}`,
+        // and what is still held once the calls stop, where that is a
+        // different number - a buffer a client grew and has not yet
+        // handed back is not the same claim as one it keeps
+        `${heldCell(control)} / ${heldCell(driver)}`,
         `${kb(control.perCallKb)} / ${kb(driver.perCallKb)}`,
         `${kb(control.wireKb)} / ${kb(driver.wireKb)}`,
         `${kb(control.wireOutKb)} / ${kb(driver.wireOutKb)}`,
@@ -246,6 +262,13 @@ function reading(results) {
       : s.ratio > 1
         ? `${s.ratio.toFixed(2)}x`
         : `${(1 / s.ratio).toFixed(2)}x to \`pg\``;
+  // the row where one client holds most more than the other, which is
+  // the one the buffer paragraph is about
+  const grown = [...named].sort(
+    (a, b) =>
+      b.driver.heldKb - b.control.heldKb - (a.driver.heldKb - a.control.heldKb),
+  )[0];
+  const peakGap = mb(Math.abs(grown.driver.peakKb - grown.control.peakKb));
   const arrayWrite = writes.find(s => s.name.includes('int4[]'));
   const blobWrite = writes.find(s => s.name.includes('bytea'));
   const bulkWrite = writes.find(s => s.name.includes('500 rows'));
@@ -287,10 +310,24 @@ function reading(results) {
            `${s.name.split(' - ')[0]} peaks at ${mb(s.driver.peakKb)} against ${mb(s.control.peakKb)}`,
        ),
      )}. Everywhere else it allocates more per call - ${heavier.length} of the ${named.length}
-     scenarios - and the distinction that matters is that this is garbage rather than growth: at
-     rest the two sit within a few hundred KB of each other whatever the scenario. Measured over
-     100, 400 and 1600 calls of a point read the gap scales with the call count and the at-rest
-     figure does not move, which is what says churn rather than a structure being held.`,
+     scenarios - and the distinction that matters is that this is garbage rather than growth:
+     between calls the two sit within a few hundred KB of each other on every scenario but the
+     large writes. Measured over 100, 400 and 1600 calls of a point read the gap scales with the
+     call count and the between-calls figure does not move, which is what says churn rather than a
+     structure being held.`,
+
+    `**And the large writes are a buffer, not growth.** ${grown.name.split(' - ')[0]} leaves
+     PostgreJS holding ${mb(grown.driver.heldKb)} where \`pg\` holds ${mb(grown.control.heldKb)},
+     which reads as the one place it keeps materially more - and it is one buffer per connection,
+     grown to the largest message it has had to write and handed back after five seconds of quiet.
+     Waited out, the same process holds ${mb(grown.driver.idleHeldKb)} - where \`pg\`, which builds
+     a fresh buffer for each message and drops it, has nothing to give back and reads within a few
+     KB of itself either way. That is also why the two peak within ${peakGap} of each other on that
+     row while one of them appears to be holding
+     ${mb(grown.driver.heldKb - grown.control.heldKb)} more. Which number is the right one depends
+     on the question: under sustained writes it is the first, for a process that goes quiet between
+     them the second. The read rows shrink on both drivers, so it is only the writes the two of
+     them answer differently.`,
 
     `**Why the payload rows separate.** PostgreJS reads and writes these columns in PostgreSQL's
      binary format where \`pg\` uses text. On the wire that is worth less than it sounds and depends
@@ -317,6 +354,9 @@ function reading(results) {
 
 function document(results) {
   const { versions } = results;
+  const by = name => results.scenarios.find(s => s.name.startsWith(name));
+  const blobRead = speedup(by('bytea of 4MB'));
+  const blobWrite = speedup(by('insert a 4MB bytea'));
   return `# The same drizzle calls, on both drivers
 
 _Generated by \`npm run bench:report\` from the last \`npm run bench\`. Do not hand-edit - re-run the
@@ -347,15 +387,19 @@ counts and by how much is thrown away, which is exactly what lets it survive a n
 whether a difference is real, and says nothing about its size - that is what the median column is
 for.
 
-The peak column is **marginal**, and means nothing read without the one beside it. It is what one
+${wrap(`The peak column is **marginal**, and means nothing read without the one beside it. It is what one
 more call adds to a client that is already warm, so a client holding a large read buffer adds little
 for the next call precisely because it is holding one - which is why the memory table reports what
 each client grew by and kept, and why the two want reading together. Raised by postgrejs's own
-repository against this column, and measured here: on the 4MB \`bytea\` read, \`pg\` holds 7.9 MB and
-adds 24.7 for a call where PostgreJS holds 4.9 and adds 8.2, so there it is not an artifact of
-holding more. On the 4MB \`bytea\` **write** it is exactly that: PostgreJS holds 4.7 MB where \`pg\`
-holds 586 KB, which is a send buffer kept between calls, and the two peaks come out level because of
-it. Both rows are in the table and the held column is what tells them apart.
+repository against this column, and measured here: on the 4MB \`bytea\` read, \`pg\` holds
+${mb(blobRead.control.heldKb)} and adds ${mb(blobRead.control.peakKb)} for a call where PostgreJS
+holds ${mb(blobRead.driver.heldKb)} and adds ${mb(blobRead.driver.peakKb)}, so there it is not an
+artifact of holding more. On the 4MB \`bytea\` **write** it is exactly that: PostgreJS holds
+${mb(blobWrite.driver.heldKb)} where \`pg\` holds ${mb(blobWrite.control.heldKb)}, which is one send
+buffer per connection grown to the largest message it has written, and the two peaks come out level
+because of it. That buffer is reclaimed after five seconds of quiet - the same process holds
+${mb(blobWrite.driver.idleHeldKb)} once the calls stop - so the held column is measured with the
+calls still coming and carries the idle figure beside it where the two differ.`)}
 
 The allocation column understates for a different reason, and knowing by how much is worth more than
 the figure: a peak above a warm baseline counts only the garbage the collector had not reached yet. Measured in a

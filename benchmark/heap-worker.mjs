@@ -10,7 +10,13 @@
  * spawned one at a time - so the figure is the whole cost of running that
  * scenario on that driver.
  *
- *   node --expose-gc benchmark/heap-worker.mjs <driver> <scenario>
+ *   node --expose-gc benchmark/heap-worker.mjs <driver> <scenario> [idle]
+ *
+ * With `idle` it measures only what the client keeps: once with the calls
+ * still coming, and once after long enough that a client which caches a
+ * buffer between calls has had time to hand it back. That second reading
+ * costs a wall-clock wait, so it is a pass of its own rather than part of
+ * every one.
  *
  * It prints one JSON line and exits.
  */
@@ -50,7 +56,7 @@ globalThis.gc();
 globalThis.gc();
 const cold = usedBytes();
 
-const [which, name] = process.argv.slice(2);
+const [which, name, mode] = process.argv.slice(2);
 const scenario = scenariosMatching('all').find(s => s.name === name);
 if (!scenario) throw new Error(`no scenario named ${name}`);
 if (which !== CONTROL && which !== DRIVER)
@@ -73,6 +79,34 @@ globalThis.gc();
 // prepared statements. Separate from what a call needs and from what a
 // batch churns through - three different questions.
 const atRest = usedBytes();
+
+/**
+ * The same question asked again after a pause, because one of these
+ * clients answers it differently depending on when you ask.
+ *
+ * PostgreJS writes each message into one growing buffer per connection
+ * and reclaims it after `houseKeepMs` (5s) of quiet, so a client that
+ * just sent a 4MB parameter is still holding the 4MB it grew to. That is
+ * real while the calls keep coming and gone shortly after they stop, and
+ * a single figure cannot say both. `pg` builds a fresh buffer per message
+ * and drops it, so it has nothing to give back and reads the same either
+ * way - which is what makes the gap look like a leak until you wait.
+ */
+if (mode === 'idle') {
+  await new Promise(resolve => setTimeout(resolve, 6000));
+  globalThis.gc();
+  globalThis.gc();
+  console.log(
+    JSON.stringify({
+      driver: which,
+      scenario: name,
+      heldKb: (atRest - cold) / 1024,
+      idleHeldKb: (usedBytes() - cold) / 1024,
+    }),
+  );
+  await close();
+  process.exit(0);
+}
 
 /**
  * What one more call adds: collect, take a baseline, run a single call,
