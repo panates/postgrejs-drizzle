@@ -68,9 +68,9 @@ async function heapInChild(scenario, driver) {
     ['--expose-gc', HEAP_WORKER, driver, scenario.name],
     { env: process.env },
   );
-  const { atRestKb, perCallKb, peakKb, wireKb, wireOutKb, iterations } =
+  const { heldKb, perCallKb, peakKb, wireKb, wireOutKb, iterations } =
     JSON.parse(stdout);
-  return { atRestKb, perCallKb, peakKb, wireKb, wireOutKb, iterations };
+  return { heldKb, perCallKb, peakKb, wireKb, wireOutKb, iterations };
 }
 
 const median = xs => {
@@ -182,7 +182,7 @@ async function main() {
 
     // and the memory, one child process per driver per pair
     const churn = { [names[0]]: [], [names[1]]: [] };
-    const atRest = { [names[0]]: [], [names[1]]: [] };
+    const held = { [names[0]]: [], [names[1]]: [] };
     const peaks = { [names[0]]: [], [names[1]]: [] };
     const wire = { [names[0]]: [], [names[1]]: [] };
     const wireOut = { [names[0]]: [], [names[1]]: [] };
@@ -195,7 +195,7 @@ async function main() {
         measured[name] = await heapInChild(scenario, name);
       for (const name of names) {
         churn[name].push(measured[name].perCallKb);
-        atRest[name].push(measured[name].atRestKb);
+        held[name].push(measured[name].heldKb);
         peaks[name].push(measured[name].peakKb);
         wire[name].push(measured[name].wireKb);
         wireOut[name].push(measured[name].wireOutKb);
@@ -222,7 +222,7 @@ async function main() {
         perCallKb: median(churn[name]),
         perCallLoKb: Math.min(...churn[name]),
         perCallHiKb: Math.max(...churn[name]),
-        atRestKb: median(atRest[name]),
+        heldKb: median(held[name]),
         peakKb: median(peaks[name]),
         wireKb: median(wire[name]),
         wireOutKb: median(wireOut[name]),
@@ -320,7 +320,7 @@ async function main() {
           `spread ${r.lo.toFixed(3)}-${r.hi.toFixed(3)}  ` +
           `${r.perCallKb.toFixed(1).padStart(6)} KB/call ` +
           `(${r.perCallLoKb.toFixed(1)}-${r.perCallHiKb.toFixed(1)}), ` +
-          `at rest ${(r.atRestKb / 1024).toFixed(1)} MB, ` +
+          `holds ${(r.heldKb / 1024).toFixed(1)} MB, ` +
           `wire ${r.wireKb.toFixed(1)} in / ${r.wireOutKb.toFixed(1)} out KB`,
       );
     console.log(`  -> postgrejs won ${wins} of ${pairs} pairs, ${odds(p)}`);

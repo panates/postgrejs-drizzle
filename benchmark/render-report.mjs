@@ -112,7 +112,7 @@ function memoryTable(results) {
   return table(
     [
       'Scenario',
-      `at rest (${CONTROL} / ${DRIVER})`,
+      `held warm (${CONTROL} / ${DRIVER})`,
       `allocated per call (${CONTROL} / ${DRIVER})`,
       `off the wire per call (${CONTROL} / ${DRIVER})`,
       `onto the wire per call (${CONTROL} / ${DRIVER})`,
@@ -123,7 +123,7 @@ function memoryTable(results) {
         value >= 1024 ? mb(value) : `${value.toFixed(1)} KB`;
       return [
         scenario.name,
-        `${mb(control.atRestKb)} / ${mb(driver.atRestKb)}`,
+        `${mb(control.heldKb)} / ${mb(driver.heldKb)}`,
         `${kb(control.perCallKb)} / ${kb(driver.perCallKb)}`,
         `${kb(control.wireKb)} / ${kb(driver.wireKb)}`,
         `${kb(control.wireOutKb)} / ${kb(driver.wireOutKb)}`,
@@ -347,8 +347,18 @@ counts and by how much is thrown away, which is exactly what lets it survive a n
 whether a difference is real, and says nothing about its size - that is what the median column is
 for.
 
-The allocation column understates, and knowing by how much is worth more than the figure: a peak
-above a warm baseline counts only the garbage the collector had not reached yet. Measured in a
+The peak column is **marginal**, and means nothing read without the one beside it. It is what one
+more call adds to a client that is already warm, so a client holding a large read buffer adds little
+for the next call precisely because it is holding one - which is why the memory table reports what
+each client grew by and kept, and why the two want reading together. Raised by postgrejs's own
+repository against this column, and measured here: on the 4MB \`bytea\` read, \`pg\` holds 7.9 MB and
+adds 24.7 for a call where PostgreJS holds 4.9 and adds 8.2, so there it is not an artifact of
+holding more. On the 4MB \`bytea\` **write** it is exactly that: PostgreJS holds 4.7 MB where \`pg\`
+holds 586 KB, which is a send buffer kept between calls, and the two peaks come out level because of
+it. Both rows are in the table and the held column is what tells them apart.
+
+The allocation column understates for a different reason, and knowing by how much is worth more than
+the figure: a peak above a warm baseline counts only the garbage the collector had not reached yet. Measured in a
 GC-free window by postgrejs's own repository, one row's intermediate array is 16 B at one column and
 120 B at nine, where a peak sample here reads 3.7 and 9.4. The column is therefore good for
 comparing two drivers on the same scenario and bad for asking what a row costs.

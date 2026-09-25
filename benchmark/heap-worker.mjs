@@ -39,6 +39,17 @@ net.Socket.prototype.write = function (chunk, ...rest) {
 const { CONTROL, DRIVER, openDatabases, scenariosMatching } =
   await import('./scenarios.mjs');
 
+const usedBytes = () => {
+  const usage = process.memoryUsage();
+  return usage.heapUsed + usage.external;
+};
+
+// Taken before a pool exists, so what the client grows by can be told
+// apart from what Node and drizzle were already holding.
+globalThis.gc();
+globalThis.gc();
+const cold = usedBytes();
+
 const [which, name] = process.argv.slice(2);
 const scenario = scenariosMatching('all').find(s => s.name === name);
 if (!scenario) throw new Error(`no scenario named ${name}`);
@@ -61,11 +72,16 @@ globalThis.gc();
 // What the driver holds at rest, warm: its pool, its buffers, its
 // prepared statements. Separate from what a call needs and from what a
 // batch churns through - three different questions.
-const atRest = process.memoryUsage();
+const atRest = usedBytes();
 
 /**
- * What one call needs at once: collect, take a baseline, run a single
- * call, keep the highest sample. Median of a few.
+ * What one more call adds: collect, take a baseline, run a single call,
+ * keep the highest sample. Median of a few.
+ *
+ * Marginal rather than total, and it means nothing read alone - a client
+ * that has already grown its read buffer adds little for the next call
+ * precisely because it is holding one. That is what `heldKb` is beside
+ * it, and the two want reading together.
  *
  * Measured over a batch instead, this reads as how much garbage piles up
  * before the collector arrives, which is a fact about GC scheduling
@@ -95,7 +111,11 @@ peaks.sort((a, b) => a - b);
 const peakKb = peaks[Math.floor(peaks.length / 2)];
 
 // and the churn: everything a batch allocates, per call, which is the
-// collector's workload rather than the process's high-water mark
+// collector's workload rather than the process's high-water mark.
+// Collected first - the peak rounds above leave the heap high, and a
+// baseline taken on top of that reads the whole batch as zero.
+globalThis.gc();
+globalThis.gc();
 const baseline = process.memoryUsage().heapUsed;
 const externalBaseline = process.memoryUsage().external;
 let churn = 0;
@@ -122,7 +142,7 @@ const measured = {
   iterations,
   // what it holds warm, what one call needs at once, what a batch
   // churns through per call, and what the batch did not give back
-  atRestKb: (atRest.heapUsed + atRest.external) / 1024,
+  heldKb: (atRest - cold) / 1024,
   peakKb,
   perCallKb: 0, // filled in below
   wireKb,
