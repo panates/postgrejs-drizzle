@@ -170,9 +170,31 @@ dialect settled on - verified again here, one value per JS type:
 | plain object | ok | **fails** - `invalid input syntax for type json` |
 
 **Settled, not a decision:** wrap `string | number | boolean | bigint | null | undefined` in
-`new BindParam(0, v)`; leave `Date`, `Buffer`, arrays and objects to PostgreJS's typed binary
-encoders. Drizzle's encoders mean the first group covers nearly every parameter in practice; the
+`new BindParam(0, v)`; leave `Date`, `Buffer`, arrays and objects unwrapped, so PostgreJS types
+them itself. Drizzle's encoders mean the first group covers nearly every parameter in practice; the
 second group only shows up through `sql` templates and custom types.
+
+**What that means on the wire: outgoing parameters are text, on both drivers.** Declaring OID 0 is
+declaring no type, so there is nothing for PostgreJS to pick a binary encoder from, and the second
+group is not the exception it sounds like. Measured by reading the format codes out of the Bind
+message - `1` is binary, `0` is text - one parameter per JS type through this driver:
+
+| parameter | `pg` | this driver |
+| --- | --- | --- |
+| string, number, bigint, `Date` | text | text |
+| `int4[]`, `text[]` | text | text |
+| plain object (`jsonb`) | text | **binary** |
+| `Buffer` (`bytea`) | binary | binary |
+
+Arrays are text by PostgreJS's own decision rather than by OID 0's: it stopped declaring an element
+type for an array of numbers because `[1, 2]` is one of six array types depending on where it lands
+and they have no casts between them. `jsonb` is the one row that differs, and its binary form is
+the same JSON text behind a one-byte version marker, so it is not a saving either.
+
+**Binary is therefore a read-side property of this driver, not a write-side one.** The server
+chooses the format of a result column because PostgreJS asks for binary results; nothing asks for
+binary parameters. `doc/BENCHMARKS.md` is the measurement, and it falls the way this predicts: the
+payload wins are all reads, and every write sends byte-for-byte what `pg` sends or close to it.
 
 ## 5. Transactions and savepoints
 
