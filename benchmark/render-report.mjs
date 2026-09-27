@@ -379,7 +379,13 @@ function reading(results) {
      the same run. What separates them is that \`pg\` reaches the runtime's collection threshold
      three times as often, so it is collected back to a lower line more often, while PostgreJS
      allocates a third as much and is allowed to run further up before anything happens. The
-     process really does peak higher on this driver; it is not because the driver asked for more.`,
+     process really does peak higher on this driver; it is not because the driver asked for more,
+     and it only does so here: the same insert on the bare clients with no drizzle in between puts
+     PostgreJS at 37.8 MB against \`pg\`'s 60.6, the collected figures unmoved at 10.12 against
+     26.92. What changed is the live heap underneath it - with drizzle's objects in the process the
+     collections halve and the ceiling floats twice as high. A high-water is partly a fact about
+     the application around the client, which is worth knowing before carrying one of these rows
+     anywhere.`,
 
     `**Where that garbage comes from is the array literal, on both sides.** Probed once rather than
      tabled, so the two figures in it do not move with a re-run: handed the same insert with the
