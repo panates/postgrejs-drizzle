@@ -99,8 +99,6 @@ function verdict(settled, ratio) {
  * held more, and the sign carries which way without a phrase for it.
  */
 function percent(settled, control, driver) {
-  // a call whose peak the 1ms sampler cannot catch has nothing to compare
-  if (control < 16 && driver < 16) return 'under a sample';
   if (!settled) return 'level';
   const change = ((driver - control) / control) * 100;
   const text = `${change > 0 ? '+' : ''}${change.toFixed(0)}%`;
@@ -321,18 +319,31 @@ function reading(results) {
      statement itself is 2500 placeholders long, and \`pg\` binds it unnamed, so the server is handed
      the whole text on every call. PostgreJS names it once and sends Bind and Execute after that.`,
 
-    `**Memory splits by size, not by direction.** Where the payload is large PostgreJS holds less of
-     it: ${list(
-       leaner.map(
-         s =>
-           `${s.name.split(' - ')[0]} peaks at ${mb(s.driver.peakKb)} against ${mb(s.control.peakKb)}`,
-       ),
-     )}. Everywhere else it allocates more per call - ${heavier.length} of the ${named.length}
-     scenarios - and the distinction that matters is that this is garbage rather than growth:
-     between calls the two sit within a few hundred KB of each other on every scenario but the
-     large writes. Measured over 100, 400 and 1600 calls of a point read the gap scales with the
-     call count and the between-calls figure does not move, which is what says churn rather than a
-     structure being held.`,
+    `**What one call peaks at splits by payload, and by a lot where it splits at all.** PostgreJS
+     peaks lower on ${leaner.length} of the ${named.length} scenarios and higher on
+     ${heavier.length}, but the sizes are not comparable between the two groups. The wins are the
+     payload rows and they are large - ${list(
+       leaner
+         .filter(s => s.control.peakKb > 1024 || s.driver.peakKb > 1024)
+         .map(
+           s =>
+             `${s.name.split(' - ')[0]} at ${mb(s.driver.peakKb)} against ${mb(s.control.peakKb)}`,
+         ),
+     )}. The losses are the decoded scalar reads, where it builds more per row and the figures are
+     single-digit MB either way: ${list(
+       heavier
+         .filter(s => s.control.peakKb > 1024 || s.driver.peakKb > 1024)
+         .map(
+           s =>
+             `${s.name.split(' - ')[0]} at ${mb(s.driver.peakKb)} against ${mb(s.control.peakKb)}`,
+         ),
+     )}. On the ordinary short rows the two are within tens of KB of each other and the column is
+     not worth reading.`,
+
+    `**And what one call peaks at is garbage rather than growth.** Between calls the two sit within
+     a few hundred KB of each other on every scenario but the large writes. Measured over 100, 400
+     and 1600 calls of a point read the gap scales with the call count and the between-calls figure
+     does not move, which is what says churn rather than a structure being held.`,
 
     `**And the large writes are a buffer, not growth.** ${grown.name.split(' - ')[0]} leaves
      PostgreJS holding ${mb(grown.driver.heldKb)} where \`pg\` holds ${mb(grown.control.heldKb)},
@@ -509,8 +520,15 @@ strings, which is where it is the sharper of the two.`)}
 
 Latency and memory are separate passes. Polling \`process.memoryUsage()\` inside the timed window costs
 more than the calls being timed and lands unevenly on the two drivers; an early revision of this file
-did exactly that and reported a 2x that was its own. Peak heap is the most \`heapUsed\` rose above a
-forced-GC baseline while a unit ran, so it needs \`--expose-gc\` to mean anything.
+did exactly that and reported a 2x that was its own. Peak heap is how far \`heapUsed + external\` rose above a
+forced-GC baseline over one call, so it needs \`--expose-gc\` to mean anything. It is read at the end
+of the call rather than only sampled during it: a timer cannot fire faster than once a millisecond,
+so a 0.6ms call is sampled once or not at all - \`point read\` took zero samples in five rounds of
+five and reported 0 KB for a call that allocates 53 - and even at 32ms the sampler caught 24.7 MB of
+pg's 53.5 on the 4MB \`bytea\` read while catching 8.2 of PostgreJS's 8.4, understating one side by
+2.2x and the other by 1.03. Nothing is collected between the baseline and the reading, so the heap
+only goes up and the end of the call is exact; the sampler is kept alongside it for the one thing it
+can still see, a peak that a mid-call collection has already taken away.
 
 ## Results
 

@@ -170,6 +170,12 @@ if (mode === 'idle') {
  * precisely because it is holding one. That is what `heldKb` is beside
  * it, and the two want reading together.
  *
+ * Read at the end of the call and not only sampled during it. Sampling
+ * alone was wrong twice over: it missed short calls entirely, and on the
+ * 4MB `bytea` read it caught 24.7 MB of pg's 53.5 while catching 8.2 of
+ * PostgreJS's 8.4 - so it understated one side by 2.2x and the other by
+ * 1.03, which distorts the comparison and not just the figure.
+ *
  * Measured over a batch instead, this reads as how much garbage piles up
  * before the collector arrives, which is a fact about GC scheduling
  * rather than about the driver - and it inverted the answer on the one
@@ -192,7 +198,18 @@ for (let round = 0; round < ROUNDS; round++) {
   }, 1);
   await scenario.run(db, round);
   clearInterval(watch);
-  peaks.push(highest / 1024);
+  // and the reading that needs no luck. A timer cannot fire faster than
+  // once a millisecond, so a call that returns in 0.6ms is sampled once
+  // or not at all - `point read` took zero samples in five rounds out of
+  // five and reported 0 KB for a call that allocates 53. Nothing is
+  // collected between the baseline and here, so the heap only goes up
+  // and the reading at the end is exact rather than lucky; the sampler
+  // is kept because it is the only thing that can see a peak a mid-call
+  // collection has already taken away.
+  const usage = process.memoryUsage();
+  const atEnd =
+    usage.heapUsed - base.heapUsed + (usage.external - base.external);
+  peaks.push(Math.max(highest, atEnd) / 1024);
 }
 peaks.sort((a, b) => a - b);
 const peakKb = peaks[Math.floor(peaks.length / 2)];
