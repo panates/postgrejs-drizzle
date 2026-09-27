@@ -123,7 +123,14 @@ if (mode === 'sustained') {
     if (usage.rss > highestRss) highestRss = usage.rss;
   }, 1);
   if (scenario.setup) await scenario.setup(db);
+  // the parent runs this child under `--trace-gc` and adds up what each
+  // collection gave back between these two marks. That total is additive
+  // in a way the high-water is not: it is how much the client actually
+  // asked for and threw away, rather than where the runtime happened to
+  // decide to collect.
+  console.log(`MARK ${performance.now().toFixed(0)}`);
   for (let i = 0; i < iterations; i++) await scenario.run(db, i);
+  console.log(`END ${performance.now().toFixed(0)}`);
   clearInterval(watch);
   console.log(
     JSON.stringify({

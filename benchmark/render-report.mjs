@@ -368,17 +368,25 @@ function reading(results) {
      is real - it is what the held column shows - but it only reaches this number where the
      message being reused for is itself large.`,
 
-    `**One of those is not per-row churn, and it says where the cost is.** Three writes need more,
-     and on two of them the payload is a few KB and the allocation column already accounts for it.
-     ${arrayWrite.name.split(' - ')[0]} is the one that is not: it needs
+    `**One of those is not per-row churn, and it is the high-water's own answer rather than the
+     client's.** ${arrayWrite.name.split(' - ')[0]} reads
      ${mb(arrayWrite.driver.sustainedKb)} against ${mb(arrayWrite.control.sustainedKb)} while
      sending ${kbOrMb(arrayWrite.driver.wireOutKb)} against
      ${kbOrMb(arrayWrite.control.wireOutKb)}, and it read the same at 25, 50, 100 and 200 calls, so
-     it is not where the batch stops. PostgreJS renders the array literal as a string, writes that
-     into the connection's buffer, and then \`flush()\` copies the finished message out of it -
-     \`frontend.js\`'s \`setLengthAndFlush\` takes the copying default - which is one full pass over
-     a megabyte more than \`pg\` makes. Its own \`getCopyDataMessage\` already avoids exactly that,
-     handing the socket a header and the caller's bytes as two buffers to write corked.`,
+     it is not where the batch stops. Counted instead of sampled, it goes the other way and not
+     narrowly: \`pg\` asks for and throws away ${kbOrMb(arrayWrite.control.reclaimedKb)} a call
+     where PostgreJS asks for ${kbOrMb(arrayWrite.driver.reclaimedKb)}. Both are measurements of
+     the same run. What separates them is that \`pg\` reaches the runtime's collection threshold
+     three times as often, so it is collected back to a lower line more often, while PostgreJS
+     allocates a third as much and is allowed to run further up before anything happens. The
+     process really does peak higher on this driver; it is not because the driver asked for more.`,
+
+    `**Where that garbage comes from is the array literal, on both sides.** Probed once rather than
+     tabled, so the two figures in it do not move with a re-run: handed the same insert with the
+     literal already built, so that only the send is measured, both clients collect 1.85 MB a call
+     - level to two decimals - and both take 10.5 ms. Handed the array instead, each builds the
+     literal itself, and that one step is the whole of the difference in both columns. Neither
+     client's send path is what separates them here.`,
 
     `**Why the payload rows separate.** PostgreJS reads and writes these columns in PostgreSQL's
      binary format where \`pg\` uses text. On the wire that is worth less than it sounds and depends
@@ -408,6 +416,8 @@ function document(results) {
   const by = name => results.scenarios.find(s => s.name.startsWith(name));
   const blobRead = speedup(by('bytea of 4MB'));
   const blobWrite = speedup(by('insert a 4MB bytea'));
+  const arrayWrite = speedup(by('insert a 100k int4[]'));
+  const bytes = blobRead;
   const sustainedCalls = by('insert a 4MB bytea').sustainedCalls;
   return `# The same drizzle calls, on both drivers
 
@@ -471,11 +481,25 @@ and the allocator's retained pages rather than with what the client is holding; 
 sweep it wandered by 80 MB on one driver while the live figure moved by 8. It is in
 \`benchmark/results/latest.json\` for anyone who wants it.`)}
 
-The allocation column understates for a different reason, and knowing by how much is worth more than
-the figure: a peak above a warm baseline counts only the garbage the collector had not reached yet. Measured in a
-GC-free window by postgrejs's own repository, one row's intermediate array is 16 B at one column and
-120 B at nine, where a peak sample here reads 3.7 and 9.4. The column is therefore good for
-comparing two drivers on the same scenario and bad for asking what a row costs.
+${wrap(`The allocation column is a high-water divided by the calls that produced it, which is the weakest
+number in this file and is kept because nothing better covers every row. postgrejs's own repository
+declined a column like it, on the grounds that a run peak says when the runtime collected rather
+than what the client asked for, and on one row here that objection lands. The sustained pass also
+runs its child under \`--trace-gc\` and adds up what every collection handed back between two marks:
+additive, and repeatable to two decimals where the divided figure moves by whole MB. On the 100k
+\`int4[]\` write the two disagree outright - collected, \`pg\` asks for and throws away
+${kbOrMb(arrayWrite.control.reclaimedKb)} a call against
+${kbOrMb(arrayWrite.driver.reclaimedKb)}, while the high-water puts PostgreJS
+${mb(arrayWrite.driver.sustainedKb - arrayWrite.control.sustainedKb)} above it.`)}
+
+${wrap(`That counted figure is **not** the column, and the reason is the mistake this file has already made
+once. \`--trace-gc\` reports the JS heap and nothing else, so a \`Buffer\` is invisible to it: on the
+4MB \`bytea\` read it records ${kbOrMb(bytes.control.reclaimedKb)} a call for \`pg\`, which moves 8 MB
+of hex and 4 MB of Buffer per call and collects barely at all in the traced sense. An earlier
+revision here read \`heapUsed\` alone and reported pg's 4MB column as 0.4 MB while it was holding 49;
+a column that counts only heap garbage would be the same error wearing a better instrument. It is
+recorded in \`benchmark/results/latest.json\` as \`reclaimedKb\` and quoted where the row is made of
+strings, which is where it is the sharper of the two.`)}
 
 Latency and memory are separate passes. Polling \`process.memoryUsage()\` inside the timed window costs
 more than the calls being timed and lands unevenly on the two drivers; an early revision of this file

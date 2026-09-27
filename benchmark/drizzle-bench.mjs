@@ -100,10 +100,45 @@ async function idleHeapInChild(scenario, driver) {
 async function sustainedInChild(scenario, driver) {
   const { stdout } = await run(
     process.execPath,
-    ['--expose-gc', HEAP_WORKER, driver, scenario.name, 'sustained'],
-    { env: process.env },
+    [
+      '--expose-gc',
+      '--trace-gc',
+      HEAP_WORKER,
+      driver,
+      scenario.name,
+      'sustained',
+    ],
+    { env: process.env, maxBuffer: 64 * 1024 * 1024 },
   );
-  return JSON.parse(stdout);
+  const measured = JSON.parse(
+    stdout.split('\n').find(line => line.startsWith('{')),
+  );
+  return { ...measured, reclaimedKb: reclaimedBetweenMarks(stdout) };
+}
+
+/**
+ * What every collection handed back while the measured calls were running,
+ * added up, from `--trace-gc`'s `before (capacity) -> after (capacity) MB`.
+ *
+ * This is the column the divided high-water was trying to be and could
+ * not: a high-water is where the runtime chose to collect, so it is not
+ * additive and two clients can swap places on it without either
+ * allocating differently. This one repeats to two decimals across runs.
+ */
+function reclaimedBetweenMarks(stdout) {
+  const mark = Number(/MARK (\d+)/.exec(stdout)?.[1]);
+  const end = Number(/END (\d+)/.exec(stdout)?.[1]);
+  if (!Number.isFinite(mark) || !Number.isFinite(end)) return 0;
+  const line =
+    /^\[\d+:0x[0-9a-f]+\]\s+(\d+) ms: \S+.*?([\d.]+) \([\d.]+\) -> ([\d.]+) \(/;
+  let total = 0;
+  for (const text of stdout.split('\n')) {
+    const found = line.exec(text);
+    if (!found) continue;
+    const at = Number(found[1]);
+    if (at >= mark && at <= end) total += Number(found[2]) - Number(found[3]);
+  }
+  return total * 1024;
 }
 
 const median = xs => {
@@ -244,6 +279,7 @@ async function main() {
 
     const sustained = { [names[0]]: [], [names[1]]: [] };
     const sustainedRss = { [names[0]]: [], [names[1]]: [] };
+    const reclaimed = { [names[0]]: [], [names[1]]: [] };
     let sustainedCalls = 0;
     let sustainedWins = 0;
     for (let pair = 0; pair < SUSTAINED_PAIRS; pair++) {
@@ -254,6 +290,9 @@ async function main() {
       for (const name of names) {
         sustained[name].push(measured[name].sustainedKb);
         sustainedRss[name].push(measured[name].sustainedRssKb);
+        reclaimed[name].push(
+          measured[name].reclaimedKb / measured[name].iterations,
+        );
         sustainedCalls = measured[name].iterations;
       }
       if (measured[names[1]].sustainedKb < measured[names[0]].sustainedKb)
@@ -284,6 +323,7 @@ async function main() {
         idleHeldKb: idleHeld[name],
         sustainedKb: median(sustained[name]),
         sustainedRssKb: median(sustainedRss[name]),
+        reclaimedKb: median(reclaimed[name]),
         peakKb: median(peaks[name]),
         wireKb: median(wire[name]),
         wireOutKb: median(wireOut[name]),
