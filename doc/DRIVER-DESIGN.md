@@ -484,8 +484,11 @@ rather than reshaped, and a caller who wants the exact decimal wants PostgreJS's
 rather than a double. All of them are pinned by tests in `test/B-live/types.spec.ts`, so the choice
 stays a decision.
 
-**Verified on the peer floor.** All 212 tests pass on PostgreJS 3.11.0, which is what the peer range
-starts at, and drizzle's own suite scores 183 of 183 there - the same as the `node-postgres` control.
+**Verified on the peer floor and on the current release.** All 228 tests pass on PostgreJS 3.11.0,
+which is what the peer range starts at, and on 3.12.0, which is what it resolves to; drizzle's own
+suite scores 183 of 183 on both - the same as the `node-postgres` control. The floor is re-run
+rather than assumed, because 3.12.0 tightened the binary integer encoders and changed how a
+`BindParam` reaching a prepared statement is handled, and a driver that used either would move.
 
 `point` is the one addition and the one that is easy to miss: PostgreJS decodes it into a `Point`
 class instance, and drizzle's `point` column in `xy` mode returns the driver value **unchanged**

@@ -368,9 +368,11 @@ function reading(results) {
      is real - it is what the held column shows - but it only reaches this number where the
      message being reused for is itself large.`,
 
-    `**One write goes the other way while sending fewer bytes.** ${arrayWrite.name.split(' - ')[0]}
-     needs ${mb(arrayWrite.driver.sustainedKb)} against ${mb(arrayWrite.control.sustainedKb)} and
-     sends ${kbOrMb(arrayWrite.driver.wireOutKb)} against
+    `**One of those is not per-row churn, and it says where the cost is.** Three writes need more,
+     and on two of them the payload is a few KB and the allocation column already accounts for it.
+     ${arrayWrite.name.split(' - ')[0]} is the one that is not: it needs
+     ${mb(arrayWrite.driver.sustainedKb)} against ${mb(arrayWrite.control.sustainedKb)} while
+     sending ${kbOrMb(arrayWrite.driver.wireOutKb)} against
      ${kbOrMb(arrayWrite.control.wireOutKb)}, and it read the same at 25, 50, 100 and 200 calls, so
      it is not where the batch stops. PostgreJS renders the array literal as a string, writes that
      into the connection's buffer, and then \`flush()\` copies the finished message out of it -
