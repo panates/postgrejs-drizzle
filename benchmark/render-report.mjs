@@ -171,11 +171,11 @@ function headlineTable(results, group) {
         `${scenario.name} - ${scenario.note}`,
         pair(
           bold(ms(control.ms), won && ratio < 1),
-          bold(mb(control.allocPerCallKb), heapSettled && heapRatio < 1),
+          `${bold(mb(control.allocPerCallKb), heapSettled && heapRatio < 1)}/call`,
         ),
         pair(
           bold(ms(driver.ms), won && ratio > 1),
-          bold(mb(driver.allocPerCallKb), heapSettled && heapRatio > 1),
+          `${bold(mb(driver.allocPerCallKb), heapSettled && heapRatio > 1)}/call`,
         ),
         pair(
           verdict(won, ratio),
@@ -473,8 +473,15 @@ counts and by how much is thrown away, which is exactly what lets it survive a n
 whether a difference is real, and says nothing about its size - that is what the median column is
 for.
 
-${wrap(`**The allocation column is what a call asks for in total, and it is measured over a batch rather
-than over one call.** Every fall in \`heapUsed + external\` is a collection handing memory back;
+${wrap(`**The allocation column is a rate, not a total.** It is what **one call** asks for, and a call is
+one \`db.execute()\` or one \`db.transaction()\` - which is one query on eleven of the thirteen rows
+and is spelled out in the scenario's own name on the two where it is not. Nothing in the table is
+the cost of running a scenario end to end; the batch length is a property of the harness, not of
+the work, so a total over it would say more about how long this file chose to run than about either
+client.`)}
+
+${wrap(`**What it counts is everything a call asks for in total, measured over a batch rather than over one
+call.** Every fall in \`heapUsed + external\` is a collection handing memory back;
 summed across the batch and added to what the heap still holds at the end, that is everything the
 calls allocated, whether or not any of it survived. Nothing in it depends on where a collection
 happens to land.`)}

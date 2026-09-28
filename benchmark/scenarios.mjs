@@ -149,7 +149,7 @@ export const SCENARIOS = [
   {
     name: 'concurrent reads',
     group: 'Read',
-    note: '20 point reads at once, pool of 10',
+    note: 'one call is 20 point reads at once, pool of 10',
     iters: 4,
     pairs: 61,
     pooled: true,
@@ -341,7 +341,7 @@ export const SCENARIOS = [
   },
   {
     name: 'twenty inserts in a transaction',
-    note: 'what a unit of work looks like',
+    note: 'one call is a begin, twenty inserts and a commit',
     group: 'Write',
     iters: 4,
     pairs: 61,
