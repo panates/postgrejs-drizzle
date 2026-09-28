@@ -1,16 +1,14 @@
 /**
  * One driver, one scenario, one process - and nothing else in it.
  *
- * Peak heap was measured with both drivers alive in the same process
- * until now, which cannot see what a client allocates once and keeps: the
- * baseline is taken after both are already up, so their pools, buffers and
- * decoders are under it rather than in it. Only the churn of a batch was
- * left, and on a small row that is mostly drizzle's, identical on both
- * sides. This is how postgrejs's own suite measures - a child per library,
- * spawned one at a time - so the figure is the whole cost of running that
- * scenario on that driver.
+ * Memory was measured with both drivers alive in the same process until
+ * a child per driver replaced it, because that cannot see what a client
+ * allocates once and keeps: the baseline is taken after both are already
+ * up, so their pools, buffers and decoders are under it rather than in
+ * it. This is also how postgrejs's own suite measures - a child per
+ * library, spawned one at a time.
  *
- *   node --expose-gc benchmark/heap-worker.mjs <driver> <scenario> [mode]
+ *   node --expose-gc benchmark/heap-worker.mjs <driver> <scenario> [idle]
  *
  * With `idle` it measures only what the client keeps: once with the calls
  * still coming, and once after long enough that a client which caches a
@@ -18,16 +16,34 @@
  * costs a wall-clock wait, so it is a pass of its own rather than part of
  * every one.
  *
- * With `sustained` it measures the other thing the peak cannot say: the
- * high-water mark of a run with **no forced collection inside it**, which
- * is what the process actually has to be able to hold. A client that
- * allocates a fresh buffer per message leaves that buffer as garbage, and
- * garbage counts until the collector arrives; one that writes into a
- * buffer it reuses leaves none. The marginal peak is blind to this by
- * construction - it collects before every sample - so it reported level
- * where a run reports a third less.
- *
  * It prints one JSON line and exits.
+ *
+ * ## Why there is no per-call peak here any more
+ *
+ * There was one, and it was wrong in three separate ways before it was
+ * given up on. It measured a single call above a forced-GC baseline:
+ *
+ * - **Sampled, it mostly sampled nothing.** A timer cannot fire faster
+ *   than once a millisecond, so a `point read` that returns in 0.6ms took
+ *   zero samples in five rounds of five and the column printed 0 KB for a
+ *   call that allocates about 30. `page of 200` took zero or one and
+ *   printed 282 KB against 41 - a `-85%` that was two coin flips.
+ * - **Sampled over a longer call it still understated, and unevenly.** On
+ *   the 4MB `bytea` read it caught 24.7 MB of pg's 53.5 while catching
+ *   8.2 of PostgreJS's 8.4, so one side read 2.2x low and the other
+ *   1.03x. That moves the comparison, not only the figure.
+ * - **Read exactly at the end of the call, the baseline is the problem.**
+ *   The first call after a collection is not like the ones after it:
+ *   call by call a `point read` costs 52.5 KB, 36.0, then 29.6 and flat
+ *   on `pg`, and 48.7, 36.8, then 30.8 and flat here. Spending calls to
+ *   settle that fixes the short rows and ruins the large ones, because
+ *   without a collection in front of it a 50 MB call meets one inside it
+ *   and the delta comes back at 759 KB, or negative. Collecting again
+ *   after settling brings the surcharge straight back: 49.3 KB.
+ *
+ * The two failures are mutually exclusive, so the quantity is not
+ * measurable that way. What replaced it is below, and agrees with two
+ * independent instruments.
  */
 import net from 'node:net';
 
@@ -85,8 +101,8 @@ if (scenario.setup) await scenario.setup(db);
 globalThis.gc();
 globalThis.gc();
 // What the driver holds at rest, warm: its pool, its buffers, its
-// prepared statements. Separate from what a call needs and from what a
-// batch churns through - three different questions.
+// prepared statements. Separate from what a call costs and from what a
+// run peaks at - three different questions.
 const atRest = usedBytes();
 
 /**
@@ -101,50 +117,6 @@ const atRest = usedBytes();
  * and drops it, so it has nothing to give back and reads the same either
  * way - which is what makes the gap look like a leak until you wait.
  */
-/**
- * What the process needs while the calls keep coming. Nothing is
- * collected on purpose here: the question is how high it goes between the
- * collections the runtime chooses, not how high one call goes above a
- * clean heap.
- *
- * Long enough to reach a steady collection cycle - swept at 25, 50, 100
- * and 200 calls, the `int4[]` write reads 77 MB against 92 at every
- * length and the 4MB `bytea` write settles by 100, so the answer is not
- * an artifact of where the batch stops.
- */
-if (mode === 'sustained') {
-  const iterations = Math.max(scenario.iters * 8, 100);
-  let highest = 0;
-  let highestRss = 0;
-  const watch = setInterval(() => {
-    const usage = process.memoryUsage();
-    const used = usage.heapUsed + usage.external;
-    if (used > highest) highest = used;
-    if (usage.rss > highestRss) highestRss = usage.rss;
-  }, 1);
-  if (scenario.setup) await scenario.setup(db);
-  // the parent runs this child under `--trace-gc` and adds up what each
-  // collection gave back between these two marks. That total is additive
-  // in a way the high-water is not: it is how much the client actually
-  // asked for and threw away, rather than where the runtime happened to
-  // decide to collect.
-  console.log(`MARK ${performance.now().toFixed(0)}`);
-  for (let i = 0; i < iterations; i++) await scenario.run(db, i);
-  console.log(`END ${performance.now().toFixed(0)}`);
-  clearInterval(watch);
-  console.log(
-    JSON.stringify({
-      driver: which,
-      scenario: name,
-      iterations,
-      sustainedKb: (highest - cold) / 1024,
-      sustainedRssKb: highestRss / 1024,
-    }),
-  );
-  await close();
-  process.exit(0);
-}
-
 if (mode === 'idle') {
   await new Promise(resolve => setTimeout(resolve, 6000));
   globalThis.gc();
@@ -162,102 +134,80 @@ if (mode === 'idle') {
 }
 
 /**
- * What one more call adds: collect, take a baseline, run a single call,
- * keep the highest sample. Median of a few.
+ * One batch, sampled at 1ms, answering two questions that are not the
+ * same and were confused for each other until they were split.
  *
- * Marginal rather than total, and it means nothing read alone - a client
- * that has already grown its read buffer adds little for the next call
- * precisely because it is holding one. That is what `heldKb` is beside
- * it, and the two want reading together.
+ * **What a call allocates.** Every fall in `heapUsed + external` is a
+ * collection handing memory back; summed over the batch and added to what
+ * the heap still holds at the end, that is everything the calls asked
+ * for. Nothing in it depends on where a collection lands, which is what
+ * made a per-call peak unmeasurable. Checked two ways: against a separate
+ * `--trace-gc` count the parent takes from this child's output, which
+ * reads 24.0 and 27.7 KB for a `point read` where this reads 24.7 and
+ * 29.0; and against the same read on bare clients with no drizzle over
+ * them, at 15.9 and 20.3. It is also the only one of the two that can see
+ * a `Buffer`, which `--trace-gc` cannot.
  *
- * Read at the end of the call and not only sampled during it. Sampling
- * alone was wrong twice over: it missed short calls entirely, and on the
- * 4MB `bytea` read it caught 24.7 MB of pg's 53.5 while catching 8.2 of
- * PostgreJS's 8.4 - so it understated one side by 2.2x and the other by
- * 1.03, which distorts the comparison and not just the figure.
+ * **What the process peaks at.** The high-water of the same samples, with
+ * nothing collected on purpose, which is what the process has to be able
+ * to hold. It is not the same ranking, and it is not meant to be: it is
+ * where the runtime chose to collect, so a client that allocates a third
+ * as much can sit higher for reaching the threshold a third as often.
  *
- * Measured over a batch instead, this reads as how much garbage piles up
- * before the collector arrives, which is a fact about GC scheduling
- * rather than about the driver - and it inverted the answer on the one
- * scenario it was checked against. A 100k `int4[]` insert peaks at 12.6
- * MB a call here and 30.4 MB under `pg`; over 24 calls the same sampling
- * said the opposite.
+ * Long enough to settle - swept at 25, 50, 100 and 200 calls, the
+ * `int4[]` write reads the same at every length - and longer where the
+ * calls are cheap, because the per-call figure converges with the batch:
+ * a `point read` reads 31.3 KB over 200 calls and 24.7 over 2000.
  */
-const peaks = [];
-const ROUNDS = 5;
-for (let round = 0; round < ROUNDS; round++) {
-  globalThis.gc();
-  globalThis.gc();
-  const base = process.memoryUsage();
-  let highest = 0;
-  const watch = setInterval(() => {
-    const usage = process.memoryUsage();
-    const delta =
-      usage.heapUsed - base.heapUsed + (usage.external - base.external);
-    if (delta > highest) highest = delta;
-  }, 1);
-  await scenario.run(db, round);
-  clearInterval(watch);
-  // and the reading that needs no luck. A timer cannot fire faster than
-  // once a millisecond, so a call that returns in 0.6ms is sampled once
-  // or not at all - `point read` took zero samples in five rounds out of
-  // five and reported 0 KB for a call that allocates 53. Nothing is
-  // collected between the baseline and here, so the heap only goes up
-  // and the reading at the end is exact rather than lucky; the sampler
-  // is kept because it is the only thing that can see a peak a mid-call
-  // collection has already taken away.
-  const usage = process.memoryUsage();
-  const atEnd =
-    usage.heapUsed - base.heapUsed + (usage.external - base.external);
-  peaks.push(Math.max(highest, atEnd) / 1024);
-}
-peaks.sort((a, b) => a - b);
-const peakKb = peaks[Math.floor(peaks.length / 2)];
+const iterations = Math.max(scenario.iters * 20, 100);
+let highest = 0;
+let highestRss = 0;
+let collected = 0;
+let previous = 0;
 
-// and the churn: everything a batch allocates, per call, which is the
-// collector's workload rather than the process's high-water mark.
-// Collected first - the peak rounds above leave the heap high, and a
-// baseline taken on top of that reads the whole batch as zero.
+if (scenario.setup) await scenario.setup(db);
 globalThis.gc();
 globalThis.gc();
-const baseline = process.memoryUsage().heapUsed;
-const externalBaseline = process.memoryUsage().external;
-let churn = 0;
-const poll = setInterval(() => {
-  const usage = process.memoryUsage();
-  const delta = usage.heapUsed - baseline + (usage.external - externalBaseline);
-  if (delta > churn) churn = delta;
-}, 5);
+const batchBase = usedBytes();
+previous = batchBase;
 
-const iterations = scenario.iters * 8;
+const watch = setInterval(() => {
+  const usage = process.memoryUsage();
+  const used = usage.heapUsed + usage.external;
+  if (used > highest) highest = used;
+  if (used < previous) collected += previous - used;
+  previous = used;
+  if (usage.rss > highestRss) highestRss = usage.rss;
+}, 1);
+
+// The parent runs this child under `--trace-gc` and adds up what each
+// collection gave back between these two marks, as a check on the
+// sampled figure that is arrived at a completely different way.
+console.log(`MARK ${performance.now().toFixed(0)}`);
 const receivedBefore = received;
 const sentBefore = sent;
 for (let i = 0; i < iterations; i++) await scenario.run(db, i);
-const wireKb = (received - receivedBefore) / 1024 / iterations;
-const wireOutKb = (sent - sentBefore) / 1024 / iterations;
+console.log(`END ${performance.now().toFixed(0)}`);
 
-clearInterval(poll);
-globalThis.gc();
-const retained = process.memoryUsage().heapUsed - baseline;
+clearInterval(watch);
+const batchEnd = usedBytes();
+if (batchEnd < previous) collected += previous - batchEnd;
 
-const measured = {
-  driver: which,
-  scenario: name,
-  iterations,
-  // what it holds warm, what one call needs at once, what a batch
-  // churns through per call, and what the batch did not give back
-  heldKb: (atRest - cold) / 1024,
-  peakKb,
-  perCallKb: 0, // filled in below
-  wireKb,
-  wireOutKb,
-  retainedKb: retained / 1024,
-  rssKb: process.memoryUsage().rss / 1024,
-};
-// the batch's high-water mark is the garbage it left behind between
-// collections, which only means anything divided by the calls that made it
-measured.perCallKb = churn / 1024 / iterations;
-console.log(JSON.stringify(measured));
+console.log(
+  JSON.stringify({
+    driver: which,
+    scenario: name,
+    iterations,
+    // what it holds warm, what a call costs, what the run peaks at, and
+    // what crossed the socket in each direction
+    heldKb: (atRest - cold) / 1024,
+    allocPerCallKb: (batchEnd - batchBase + collected) / iterations / 1024,
+    sustainedKb: (highest - cold) / 1024,
+    sustainedRssKb: highestRss / 1024,
+    wireKb: (received - receivedBefore) / 1024 / iterations,
+    wireOutKb: (sent - sentBefore) / 1024 / iterations,
+  }),
+);
 
 await close();
 process.exit(0);

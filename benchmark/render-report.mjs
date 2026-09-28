@@ -80,7 +80,7 @@ const speedup = scenario => {
     // would produce is reported as level, whichever way the medians fell
     // the peak, because that is what the column shows and what the sign
     // test counted - the churn is its own column further down
-    heapRatio: control.peakKb / driver.peakKb,
+    heapRatio: control.allocPerCallKb / driver.allocPerCallKb,
     heapSettled: scenario.heapP < 0.05,
   };
 };
@@ -125,7 +125,6 @@ function memoryTable(results) {
       'Scenario',
       `held between calls (${CONTROL} / ${DRIVER})`,
       `high-water under load (${CONTROL} / ${DRIVER})`,
-      `allocated per call (${CONTROL} / ${DRIVER})`,
       `off the wire per call (${CONTROL} / ${DRIVER})`,
       `onto the wire per call (${CONTROL} / ${DRIVER})`,
     ],
@@ -140,7 +139,6 @@ function memoryTable(results) {
         // handed back is not the same claim as one it keeps
         `${heldCell(control)} / ${heldCell(driver)}`,
         `${mb(control.sustainedKb)} / ${mb(driver.sustainedKb)}`,
-        `${kb(control.perCallKb)} / ${kb(driver.perCallKb)}`,
         `${kb(control.wireKb)} / ${kb(driver.wireKb)}`,
         `${kb(control.wireOutKb)} / ${kb(driver.wireOutKb)}`,
       ];
@@ -160,7 +158,12 @@ function headlineTable(results, group) {
     ? results.scenarios.filter(s => s.group === group)
     : results.scenarios;
   return table(
-    ['Scenario', `${CONTROL}<br>peak memory`, `${DRIVER}<br>peak memory`, ''],
+    [
+      'Scenario',
+      `${CONTROL}<br>allocated per call`,
+      `${DRIVER}<br>allocated per call`,
+      '',
+    ],
     rows.map(scenario => {
       const { control, driver, ratio, won, heapRatio, heapSettled } =
         speedup(scenario);
@@ -168,15 +171,15 @@ function headlineTable(results, group) {
         `${scenario.name} - ${scenario.note}`,
         pair(
           bold(ms(control.ms), won && ratio < 1),
-          bold(mb(control.peakKb), heapSettled && heapRatio < 1),
+          bold(mb(control.allocPerCallKb), heapSettled && heapRatio < 1),
         ),
         pair(
           bold(ms(driver.ms), won && ratio > 1),
-          bold(mb(driver.peakKb), heapSettled && heapRatio > 1),
+          bold(mb(driver.allocPerCallKb), heapSettled && heapRatio > 1),
         ),
         pair(
           verdict(won, ratio),
-          percent(heapSettled, control.peakKb, driver.peakKb),
+          percent(heapSettled, control.allocPerCallKb, driver.allocPerCallKb),
         ),
       ];
     }),
@@ -219,14 +222,14 @@ function figures(results) {
   return {
     bytesDriverMs: bytes.driver.ms.toFixed(1),
     bytesControlMs: bytes.control.ms.toFixed(1),
-    bytesDriverHeap: mb(bytes.driver.peakKb),
-    bytesControlHeap: mb(bytes.control.peakKb),
+    bytesDriverHeap: mb(bytes.driver.allocPerCallKb),
+    bytesControlHeap: mb(bytes.control.allocPerCallKb),
     arrayRatio: array.ratio.toFixed(1),
     bytesRatio: bytes.ratio.toFixed(1),
     arrayDriverMs: array.driver.ms.toFixed(1),
     arrayControlMs: array.control.ms.toFixed(1),
-    arrayDriverHeap: mb(array.driver.peakKb),
-    arrayControlHeap: mb(array.control.peakKb),
+    arrayDriverHeap: mb(array.driver.allocPerCallKb),
+    arrayControlHeap: mb(array.control.allocPerCallKb),
     pointWins: point.wins,
     pointPairs: point.pairs,
     widthLow: Math.min(...widths.map(w => w.ratio)).toFixed(1),
@@ -268,7 +271,9 @@ function reading(results) {
     (a, b) =>
       b.driver.heldKb - b.control.heldKb - (a.driver.heldKb - a.control.heldKb),
   )[0];
-  const peakGap = mb(Math.abs(grown.driver.peakKb - grown.control.peakKb));
+  const peakGap = mb(
+    Math.abs(grown.driver.allocPerCallKb - grown.control.allocPerCallKb),
+  );
   const sustainedLower = named.filter(
     s => s.driver.sustainedKb < s.control.sustainedKb,
   );
@@ -319,28 +324,34 @@ function reading(results) {
      statement itself is 2500 placeholders long, and \`pg\` binds it unnamed, so the server is handed
      the whole text on every call. PostgreJS names it once and sends Bind and Execute after that.`,
 
-    `**What one call peaks at splits by payload, and by a lot where it splits at all.** PostgreJS
-     peaks lower on ${leaner.length} of the ${named.length} scenarios and higher on
+    `**What a call allocates splits by payload, and by a lot where it splits at all.** PostgreJS
+     allocates less on ${leaner.length} of the ${named.length} scenarios and more on
      ${heavier.length}, but the sizes are not comparable between the two groups. The wins are the
      payload rows and they are large - ${list(
        leaner
-         .filter(s => s.control.peakKb > 1024 || s.driver.peakKb > 1024)
+         .filter(
+           s =>
+             s.control.allocPerCallKb > 1024 || s.driver.allocPerCallKb > 1024,
+         )
          .map(
            s =>
-             `${s.name.split(' - ')[0]} at ${mb(s.driver.peakKb)} against ${mb(s.control.peakKb)}`,
+             `${s.name.split(' - ')[0]} at ${mb(s.driver.allocPerCallKb)} against ${mb(s.control.allocPerCallKb)}`,
          ),
      )}. The losses are the decoded scalar reads, where it builds more per row and the figures are
      single-digit MB either way: ${list(
        heavier
-         .filter(s => s.control.peakKb > 1024 || s.driver.peakKb > 1024)
+         .filter(
+           s =>
+             s.control.allocPerCallKb > 1024 || s.driver.allocPerCallKb > 1024,
+         )
          .map(
            s =>
-             `${s.name.split(' - ')[0]} at ${mb(s.driver.peakKb)} against ${mb(s.control.peakKb)}`,
+             `${s.name.split(' - ')[0]} at ${mb(s.driver.allocPerCallKb)} against ${mb(s.control.allocPerCallKb)}`,
          ),
      )}. On the ordinary short rows the two are within tens of KB of each other and the column is
      not worth reading.`,
 
-    `**And what one call peaks at is garbage rather than growth.** Between calls the two sit within
+    `**And what a call allocates is garbage rather than growth.** Between calls the two sit within
      a few hundred KB of each other on every scenario but the large writes. Measured over 100, 400
      and 1600 calls of a point read the gap scales with the call count and the between-calls figure
      does not move, which is what says churn rather than a structure being held.`,
@@ -351,16 +362,16 @@ function reading(results) {
      grown to the largest message it has had to write and handed back after five seconds of quiet.
      Waited out, the same process holds ${mb(grown.driver.idleHeldKb)} - where \`pg\`, which builds
      a fresh buffer for each message and drops it, has nothing to give back and reads within a few
-     KB of itself either way. That is also why the two peak within ${peakGap} of each other on that
-     row while one of them appears to be holding
+     KB of itself either way. That is also why the two allocate within ${peakGap} of each other on
+     that row while one of them appears to be holding
      ${mb(grown.driver.heldKb - grown.control.heldKb)} more. Which number is the right one depends
      on the question: under sustained writes it is the first, for a process that goes quiet between
      them the second. The read rows shrink on both drivers, so it is only the writes the two of
      them answer differently.`,
 
-    `**Under sustained load the two separate, and not all one way.** The peak column collects
-     before every sample, so garbage a client leaves behind is gone before the number is read.
-     Measured without that collection - each scenario's own call count, no fewer than 100, three
+    `**The high-water splits differently from the allocation, and not all one way.** It is where the
+     runtime chose to collect rather than what the client asked for, so the two need not agree.
+     Measured over the same batch - each scenario's own call count, no fewer than 100, three
      paired repetitions - PostgreJS needs less on ${sustainedLower.length} of the ${named.length}
      scenarios and more on ${sustainedHigher.length}. Less: ${list(
        sustainedLower.map(sustainedSays),
@@ -372,31 +383,29 @@ function reading(results) {
 
     `**What decides it is the allocation column, not the buffer reuse.** The rows where PostgreJS
      needs less are the ones where it hands back a large payload without building a large
-     intermediate - ${kbOrMb(bytes.driver.perCallKb)} a call against
-     ${kbOrMb(bytes.control.perCallKb)} on the 4MB \`bytea\` read, which is the hex string \`pg\`
+     intermediate - ${kbOrMb(bytes.driver.allocPerCallKb)} a call against
+     ${kbOrMb(bytes.control.allocPerCallKb)} on the 4MB \`bytea\` read, which is the hex string \`pg\`
      has to materialise and it does not. The rows where it needs more are the ones where it builds
      more per row, and the sustained figure follows that at a few hundred KB a call. Buffer reuse
      is real - it is what the held column shows - but it only reaches this number where the
      message being reused for is itself large.`,
 
-    `**One of those is not per-row churn, and it is the high-water's own answer rather than the
-     client's.** ${arrayWrite.name.split(' - ')[0]} reads
-     ${mb(arrayWrite.driver.sustainedKb)} against ${mb(arrayWrite.control.sustainedKb)} while
-     sending ${kbOrMb(arrayWrite.driver.wireOutKb)} against
-     ${kbOrMb(arrayWrite.control.wireOutKb)}, and it read the same at 25, 50, 100 and 200 calls, so
-     it is not where the batch stops. Counted instead of sampled, it goes the other way and not
-     narrowly: \`pg\` asks for and throws away ${kbOrMb(arrayWrite.control.reclaimedKb)} a call
-     where PostgreJS asks for ${kbOrMb(arrayWrite.driver.reclaimedKb)}. Both are measurements of
-     the same run. What separates them is that \`pg\` reaches the runtime's collection threshold
-     three times as often, so it is collected back to a lower line more often, while PostgreJS
-     allocates a third as much and is allowed to run further up before anything happens. The
-     process really does peak higher on this driver; it is not because the driver asked for more,
-     and it only does so here: the same insert on the bare clients with no drizzle in between puts
-     PostgreJS at 37.8 MB against \`pg\`'s 60.6, the collected figures unmoved at 10.12 against
-     26.92. What changed is the live heap underneath it - with drizzle's objects in the process the
-     collections halve and the ceiling floats twice as high. A high-water is partly a fact about
-     the application around the client, which is worth knowing before carrying one of these rows
-     anywhere.`,
+    `**One of those is the high-water's own answer rather than the client's.**
+     ${arrayWrite.name.split(' - ')[0]} peaks at ${mb(arrayWrite.driver.sustainedKb)} against
+     ${mb(arrayWrite.control.sustainedKb)} while sending ${kbOrMb(arrayWrite.driver.wireOutKb)}
+     against ${kbOrMb(arrayWrite.control.wireOutKb)}, and it read the same at 25, 50, 100 and 200
+     calls, so it is not where the batch stops. The allocation column goes the other way and not
+     narrowly: \`pg\` asks for ${kbOrMb(arrayWrite.control.allocPerCallKb)} a call where PostgreJS
+     asks for ${kbOrMb(arrayWrite.driver.allocPerCallKb)}, and a separate \`--trace-gc\` count of the
+     same run agrees at ${kbOrMb(arrayWrite.control.reclaimedKb)} against
+     ${kbOrMb(arrayWrite.driver.reclaimedKb)}. Both are measurements of the same batch. What
+     separates them is that \`pg\` reaches the runtime's collection threshold three times as often
+     and is collected back to a lower line, while PostgreJS asks for a third as much and is allowed
+     to run further up first. The process really does peak higher on this driver; it is not because
+     the driver asked for more, and it only does so here - the same insert on the bare clients with
+     no drizzle in between puts PostgreJS at 37.8 MB against \`pg\`'s 60.6, the counted figures
+     unmoved at 10.12 against 26.92. A high-water is partly a fact about the application around the
+     client, which is worth knowing before carrying one of these rows anywhere.`,
 
     `**Where that garbage comes from is the array literal, on both sides.** Probed once rather than
      tabled, so the two figures in it do not move with a re-run: handed the same insert with the
@@ -416,8 +425,8 @@ function reading(results) {
 
     `**What it is winning is mostly the parse, not the bytes.** The text path materialises the whole
      value as a string and walks it; the binary path reads it out of the buffer it already has. That
-     is also why it allocates ${kbOrMb(array.driver.perCallKb)} a call against
-     ${kbOrMb(array.control.perCallKb)} on the array, and why the single-digit case - where it pulls
+     is also why it allocates ${kbOrMb(array.driver.allocPerCallKb)} a call against
+     ${kbOrMb(array.control.allocPerCallKb)} on the array, and why the single-digit case - where it pulls
      four times the bytes \`pg\` does - was still not behind when it was measured.`,
 
     `**Where it reaches you.** Through drizzle, these are \`bytea\` columns, array columns, and
@@ -431,11 +440,9 @@ function reading(results) {
 function document(results) {
   const { versions } = results;
   const by = name => results.scenarios.find(s => s.name.startsWith(name));
-  const blobRead = speedup(by('bytea of 4MB'));
   const blobWrite = speedup(by('insert a 4MB bytea'));
-  const arrayWrite = speedup(by('insert a 100k int4[]'));
-  const bytes = blobRead;
-  const sustainedCalls = by('insert a 4MB bytea').sustainedCalls;
+  const byName = name => speedup(by(name));
+  const kb = value => (value >= 1024 ? mb(value) : `${value.toFixed(0)} KB`);
   return `# The same drizzle calls, on both drivers
 
 _Generated by \`npm run bench:report\` from the last \`npm run bench\`. Do not hand-edit - re-run the
@@ -466,69 +473,57 @@ counts and by how much is thrown away, which is exactly what lets it survive a n
 whether a difference is real, and says nothing about its size - that is what the median column is
 for.
 
-${wrap(`The peak column is **marginal**, and means nothing read without the one beside it. It is what one
-more call adds to a client that is already warm, so a client holding a large read buffer adds little
-for the next call precisely because it is holding one - which is why the memory table reports what
-each client grew by and kept, and why the two want reading together. Raised by postgrejs's own
-repository against this column, and measured here: on the 4MB \`bytea\` read, \`pg\` holds
-${mb(blobRead.control.heldKb)} and adds ${mb(blobRead.control.peakKb)} for a call where PostgreJS
-holds ${mb(blobRead.driver.heldKb)} and adds ${mb(blobRead.driver.peakKb)}, so there it is not an
-artifact of holding more. On the 4MB \`bytea\` **write** it is exactly that: PostgreJS holds
-${mb(blobWrite.driver.heldKb)} where \`pg\` holds ${mb(blobWrite.control.heldKb)}, which is one send
-buffer per connection grown to the largest message it has written, and the two peaks come out level
-because of it. That buffer is reclaimed after five seconds of quiet - the same process holds
-${mb(blobWrite.driver.idleHeldKb)} once the calls stop - so the held column is measured with the
-calls still coming and carries the idle figure beside it where the two differ.`)}
+${wrap(`**The allocation column is what a call asks for in total, and it is measured over a batch rather
+than over one call.** Every fall in \`heapUsed + external\` is a collection handing memory back;
+summed across the batch and added to what the heap still holds at the end, that is everything the
+calls allocated, whether or not any of it survived. Nothing in it depends on where a collection
+happens to land.`)}
 
-${wrap(`What the peak cannot say at all is what a **run** needs, and it is blind to it by construction:
-it collects before every sample, so a client that allocates a fresh buffer per message has already
-had that buffer taken away before the number is read. That is real memory while it waits for the
-collector, and a process has to be able to hold it. The high-water column is therefore a separate
-pass with nothing forced inside the window - ${sustainedCalls} calls, three paired repetitions,
-median - and it separates the two where the peak reads level: on the 4MB \`bytea\` write PostgreJS
-needs ${mb(blobWrite.driver.sustainedKb)} against ${mb(blobWrite.control.sustainedKb)} while the
-peaks are within ${mb(Math.abs(blobWrite.driver.peakKb - blobWrite.control.peakKb))} of each other.
-Long enough to reach a steady collection cycle: swept at 25, 50, 100 and 200 calls the direction
-never changed on either of the two rows it was checked against.`)}
+${wrap(`**A per-call figure was tried first and is not measurable**, which is worth writing down because
+the number it produced was quoted here for several revisions. Measured as one call above a forced
+collection, it failed three separate ways. Sampled at 1ms it mostly sampled nothing: a \`point read\`
+returns in 0.6ms and took zero samples in five rounds of five, printing 0 KB for a call that
+allocates about 30, and \`page of 200\` printed 282 KB against 41 - a \`-85%\` that was two coin
+flips against the ${kb(byName('page of 200').control.allocPerCallKb)} and ${kb(byName('page of 200').driver.allocPerCallKb)} it really is. Sampled over a longer call it still
+understated, and unevenly: on the 4MB \`bytea\` read it caught 24.7 MB of pg's 53.5 while catching
+8.2 of PostgreJS's 8.4, which moves the comparison and not only the figure. Read exactly at the end
+of the call instead, the baseline is the problem - the first call after a collection costs 52.5 KB
+where the fourth costs 29.6, and by a different factor on each client. Spending calls to settle that
+fixes the short rows and ruins the large ones, because a 50 MB call with no collection in front of
+it meets one inside it and the delta comes back at 759 KB or negative. The two failures are
+mutually exclusive, so the column is gone rather than patched.`)}
 
-${wrap(`RSS is sampled in the same pass and is **not** the column, because it did not measure this. It
-runs three to six times the live figure on both drivers - ${mb(blobWrite.control.sustainedRssKb)}
-against ${mb(blobWrite.driver.sustainedRssKb)} on that write - and it moves with V8's reserved heap
-and the allocator's retained pages rather than with what the client is holding; over a batch-length
-sweep it wandered by 80 MB on one driver while the live figure moved by 8. It is in
-\`benchmark/results/latest.json\` for anyone who wants it.`)}
+${wrap(`**It is checked against two instruments that share none of its machinery.** The children run under
+\`--trace-gc\` and the parent adds up what each collection reported handing back; on the rows made of
+strings the two agree closely - ${kbOrMb(byName('insert a 100k int4[]').control.allocPerCallKb)} against ${kbOrMb(byName('insert a 100k int4[]').control.reclaimedKb)} traced on the 100k \`int4[]\` write,
+${kbOrMb(byName('int4[] of 100k, full width').control.allocPerCallKb)} against ${kbOrMb(byName('int4[] of 100k, full width').control.reclaimedKb)} reading one back. Where they part is where
+\`--trace-gc\` is blind: it reports the JS heap only, so a \`Buffer\` is invisible to it and it reads
+${kbOrMb(byName('bytea of 4MB').control.reclaimedKb)} a call on the 4MB \`bytea\` read against the ${kbOrMb(byName('bytea of 4MB').control.allocPerCallKb)} actually moved. That is the
+\`heapUsed\`-without-\`external\` error in a better-looking instrument, and it is why the traced figure
+is recorded in \`benchmark/results/latest.json\` as \`reclaimedKb\` rather than printed as a column.
+The second check is the floor: the same point read on bare clients with no drizzle over them
+allocates 15.9 KB and 20.3 KB, against ${kb(byName('point read').control.allocPerCallKb)} and ${kb(byName('point read').driver.allocPerCallKb)} here, so the tens of KB a small
+query costs are real and mostly not this driver's.`)}
 
-${wrap(`The allocation column is a high-water divided by the calls that produced it, which is the weakest
-number in this file and is kept because nothing better covers every row. postgrejs's own repository
-declined a column like it, on the grounds that a run peak says when the runtime collected rather
-than what the client asked for, and on one row here that objection lands. The sustained pass also
-runs its child under \`--trace-gc\` and adds up what every collection handed back between two marks:
-additive, and repeatable to two decimals where the divided figure moves by whole MB. On the 100k
-\`int4[]\` write the two disagree outright - collected, \`pg\` asks for and throws away
-${kbOrMb(arrayWrite.control.reclaimedKb)} a call against
-${kbOrMb(arrayWrite.driver.reclaimedKb)}, while the high-water puts PostgreJS
-${mb(arrayWrite.driver.sustainedKb - arrayWrite.control.sustainedKb)} above it.`)}
+${wrap(`**The high-water column answers a different question and ranks the drivers differently on
+purpose.** It is the highest \`heapUsed + external\` the same batch reached with nothing collected on
+command, which is what the process has to be able to hold. It is not a second opinion on allocation:
+it is where the runtime chose to collect. A client that allocates a third as much reaches the
+threshold a third as often and is allowed to run further up first, so the two columns can and do
+disagree - the 100k \`int4[]\` write is the row where they disagree outright. Read together they
+say what a caller needs to know; read alone either one misleads.`)}
 
-${wrap(`That counted figure is **not** the column, and the reason is the mistake this file has already made
-once. \`--trace-gc\` reports the JS heap and nothing else, so a \`Buffer\` is invisible to it: on the
-4MB \`bytea\` read it records ${kbOrMb(bytes.control.reclaimedKb)} a call for \`pg\`, which moves 8 MB
-of hex and 4 MB of Buffer per call and collects barely at all in the traced sense. An earlier
-revision here read \`heapUsed\` alone and reported pg's 4MB column as 0.4 MB while it was holding 49;
-a column that counts only heap garbage would be the same error wearing a better instrument. It is
-recorded in \`benchmark/results/latest.json\` as \`reclaimedKb\` and quoted where the row is made of
-strings, which is where it is the sharper of the two.`)}
+${wrap(`RSS is sampled in the same pass and is **not** a column, because it did not measure this. It runs
+three to six times the live figure on both drivers - ${mb(blobWrite.control.sustainedRssKb)}
+against ${mb(blobWrite.driver.sustainedRssKb)} on the 4MB \`bytea\` write - and it moves with V8's
+reserved heap and the allocator's retained pages rather than with what the client is holding; over a
+batch-length sweep it wandered by 80 MB on one driver while the live figure moved by 8. It is in the
+results file for anyone who wants it.`)}
 
-Latency and memory are separate passes. Polling \`process.memoryUsage()\` inside the timed window costs
-more than the calls being timed and lands unevenly on the two drivers; an early revision of this file
-did exactly that and reported a 2x that was its own. Peak heap is how far \`heapUsed + external\` rose above a
-forced-GC baseline over one call, so it needs \`--expose-gc\` to mean anything. It is read at the end
-of the call rather than only sampled during it: a timer cannot fire faster than once a millisecond,
-so a 0.6ms call is sampled once or not at all - \`point read\` took zero samples in five rounds of
-five and reported 0 KB for a call that allocates 53 - and even at 32ms the sampler caught 24.7 MB of
-pg's 53.5 on the 4MB \`bytea\` read while catching 8.2 of PostgreJS's 8.4, understating one side by
-2.2x and the other by 1.03. Nothing is collected between the baseline and the reading, so the heap
-only goes up and the end of the call is exact; the sampler is kept alongside it for the one thing it
-can still see, a peak that a mid-call collection has already taken away.
+${wrap(`Latency and memory are separate passes. Polling \`process.memoryUsage()\` inside the timed window
+costs more than the calls being timed and lands unevenly on the two drivers; an early revision of
+this file did exactly that and reported a 2x that was its own. The memory pass forces a collection
+to take its baseline, so it needs \`--expose-gc\` to mean anything.`)}
 
 ## Results
 
@@ -557,19 +552,17 @@ pg's 4MB column as 0.4 MB while it is really holding 49 MB of it.
 
 ${heapSignTable(results)}
 
-Those two are different questions, and the answers are not the same. What a driver holds warm is one
-number; what a single call allocates and then throws away is another, and it is the second one the
-peak is made of on a small query - the peak above a warm baseline is garbage waiting for the
-collector, and it grows with the size of the batch rather than saying anything about the driver:
+${wrap(`Those are three different questions and the answers are not the same, which is the whole reason
+they are three columns: what a client keeps between calls, what a call costs while it runs, and how
+high the process goes before the runtime collects.`)}
 
 ${memoryTable(results)}
 
-The per-call column is the steadier of the two. A peak is whatever was alive at one moment, and on
-the payload rows that depends on when the collector happened to run - a \`bytea\` is a \`Buffer\`, and a
-\`Buffer\` is freed on collection rather than when it goes out of scope, so the same scenario has
-peaked at 0.7 MB on one run and 32 MB on the next. Both drivers are measured the same way and the
-split is 15 of 15 either way, so what the sign test settles is the direction; the magnitude of a peak
-is not worth quoting to two figures.
+${wrap(`The first two are properties of the client. The third is partly a property of the application
+around it - with a larger live heap under the same calls the collections halve and the ceiling
+floats about twice as high, so two clients can change places on it between a bare harness and a real
+process without either behaving differently. Take the allocation column as the comparison and the
+high-water as the sizing.`)}
 
 ## Reading them
 

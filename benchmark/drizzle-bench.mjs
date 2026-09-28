@@ -39,7 +39,6 @@ const arg = (name, fallback) => {
 
 const PAIRS = Number(arg('pairs', 0)); // 0: each scenario's own
 const HEAP_PAIRS = Number(arg('heap-pairs', 15));
-const SUSTAINED_PAIRS = Number(arg('sustained-pairs', 3));
 const ONLY = arg('scenario', 'all');
 /**
  * One timed batch. Nothing is sampled while it runs: polling
@@ -63,15 +62,16 @@ async function timedBatch(scenario, db) {
  * child per driver - which is how postgrejs's own suite does it - puts
  * the whole cost inside the window.
  */
-async function heapInChild(scenario, driver) {
+async function memoryInChild(scenario, driver) {
   const { stdout } = await run(
     process.execPath,
-    ['--expose-gc', HEAP_WORKER, driver, scenario.name],
-    { env: process.env },
+    ['--expose-gc', '--trace-gc', HEAP_WORKER, driver, scenario.name],
+    { env: process.env, maxBuffer: 64 * 1024 * 1024 },
   );
-  const { heldKb, perCallKb, peakKb, wireKb, wireOutKb, iterations } =
-    JSON.parse(stdout);
-  return { heldKb, perCallKb, peakKb, wireKb, wireOutKb, iterations };
+  const measured = JSON.parse(
+    stdout.split('\n').find(line => line.startsWith('{')),
+  );
+  return { ...measured, reclaimedKb: reclaimedBetweenMarks(stdout) };
 }
 
 /**
@@ -97,25 +97,6 @@ async function idleHeapInChild(scenario, driver) {
  * repetitions, median: fewer than the timings because the splits it
  * produces are 9-0 rather than close.
  */
-async function sustainedInChild(scenario, driver) {
-  const { stdout } = await run(
-    process.execPath,
-    [
-      '--expose-gc',
-      '--trace-gc',
-      HEAP_WORKER,
-      driver,
-      scenario.name,
-      'sustained',
-    ],
-    { env: process.env, maxBuffer: 64 * 1024 * 1024 },
-  );
-  const measured = JSON.parse(
-    stdout.split('\n').find(line => line.startsWith('{')),
-  );
-  return { ...measured, reclaimedKb: reclaimedBetweenMarks(stdout) };
-}
-
 /**
  * What every collection handed back while the measured calls were running,
  * added up, from `--trace-gc`'s `before (capacity) -> after (capacity) MB`.
@@ -249,55 +230,45 @@ async function main() {
     }
 
     // and the memory, one child process per driver per pair
-    const churn = { [names[0]]: [], [names[1]]: [] };
     const held = { [names[0]]: [], [names[1]]: [] };
-    const peaks = { [names[0]]: [], [names[1]]: [] };
+    const alloc = { [names[0]]: [], [names[1]]: [] };
+    const sustained = { [names[0]]: [], [names[1]]: [] };
+    const sustainedRss = { [names[0]]: [], [names[1]]: [] };
+    const reclaimed = { [names[0]]: [], [names[1]]: [] };
     const wire = { [names[0]]: [], [names[1]]: [] };
     const wireOut = { [names[0]]: [], [names[1]]: [] };
     let memoryCalls = 0;
-    let heapWins = 0;
+    let allocWins = 0;
+    let sustainedWins = 0;
     for (let pair = 0; pair < HEAP_PAIRS; pair++) {
       const order = pair % 2 ? [names[1], names[0]] : names;
       const measured = {};
       for (const name of order)
-        measured[name] = await heapInChild(scenario, name);
+        measured[name] = await memoryInChild(scenario, name);
       for (const name of names) {
-        churn[name].push(measured[name].perCallKb);
         held[name].push(measured[name].heldKb);
-        peaks[name].push(measured[name].peakKb);
-        wire[name].push(measured[name].wireKb);
-        wireOut[name].push(measured[name].wireOutKb);
-        memoryCalls = measured[name].iterations;
-      }
-      // on the peak, because that is the number the report's column shows
-      if (measured[names[1]].peakKb < measured[names[0]].peakKb) heapWins++;
-    }
-
-    const idleHeld = {};
-    for (const name of names)
-      idleHeld[name] = await idleHeapInChild(scenario, name);
-
-    const sustained = { [names[0]]: [], [names[1]]: [] };
-    const sustainedRss = { [names[0]]: [], [names[1]]: [] };
-    const reclaimed = { [names[0]]: [], [names[1]]: [] };
-    let sustainedCalls = 0;
-    let sustainedWins = 0;
-    for (let pair = 0; pair < SUSTAINED_PAIRS; pair++) {
-      const order = pair % 2 ? [names[1], names[0]] : names;
-      const measured = {};
-      for (const name of order)
-        measured[name] = await sustainedInChild(scenario, name);
-      for (const name of names) {
+        alloc[name].push(measured[name].allocPerCallKb);
         sustained[name].push(measured[name].sustainedKb);
         sustainedRss[name].push(measured[name].sustainedRssKb);
         reclaimed[name].push(
           measured[name].reclaimedKb / measured[name].iterations,
         );
-        sustainedCalls = measured[name].iterations;
+        wire[name].push(measured[name].wireKb);
+        wireOut[name].push(measured[name].wireOutKb);
+        memoryCalls = measured[name].iterations;
       }
+      // on what a call allocates, because that is the column the report
+      // leads with - the high-water is counted separately below, since
+      // the two rank the drivers differently on purpose
+      if (measured[names[1]].allocPerCallKb < measured[names[0]].allocPerCallKb)
+        allocWins++;
       if (measured[names[1]].sustainedKb < measured[names[0]].sustainedKb)
         sustainedWins++;
     }
+
+    const idleHeld = {};
+    for (const name of names)
+      idleHeld[name] = await idleHeapInChild(scenario, name);
 
     results.push({
       scenario,
@@ -306,25 +277,22 @@ async function main() {
       p: signTest(wins, pairs),
       heapPairs: HEAP_PAIRS,
       memoryCalls,
-      sustainedPairs: SUSTAINED_PAIRS,
-      sustainedCalls,
       sustainedWins,
-      heapWins,
-      heapP: signTest(heapWins, HEAP_PAIRS),
+      heapWins: allocWins,
+      heapP: signTest(allocWins, HEAP_PAIRS),
       rows: names.map(name => ({
         name,
         ms: median(samples[name]),
         lo: Math.min(...samples[name]),
         hi: Math.max(...samples[name]),
-        perCallKb: median(churn[name]),
-        perCallLoKb: Math.min(...churn[name]),
-        perCallHiKb: Math.max(...churn[name]),
+        allocPerCallKb: median(alloc[name]),
+        allocLoKb: Math.min(...alloc[name]),
+        allocHiKb: Math.max(...alloc[name]),
         heldKb: median(held[name]),
         idleHeldKb: idleHeld[name],
         sustainedKb: median(sustained[name]),
         sustainedRssKb: median(sustainedRss[name]),
         reclaimedKb: median(reclaimed[name]),
-        peakKb: median(peaks[name]),
         wireKb: median(wire[name]),
         wireOutKb: median(wireOut[name]),
       })),
@@ -372,8 +340,6 @@ async function main() {
             memoryCalls,
             heapWins,
             heapP,
-            sustainedPairs,
-            sustainedCalls,
             sustainedWins,
             rows,
           }) => ({
@@ -388,8 +354,6 @@ async function main() {
             memoryCalls,
             heapWins,
             heapP,
-            sustainedPairs,
-            sustainedCalls,
             sustainedWins,
             rows,
           }),
@@ -425,8 +389,8 @@ async function main() {
         `  ${r.name.padEnd(15)} ${r.ms.toFixed(3).padStart(9)} ms/op  ` +
           `${(slowest / r.ms).toFixed(2)}x  ` +
           `spread ${r.lo.toFixed(3)}-${r.hi.toFixed(3)}  ` +
-          `${r.perCallKb.toFixed(1).padStart(6)} KB/call ` +
-          `(${r.perCallLoKb.toFixed(1)}-${r.perCallHiKb.toFixed(1)}), ` +
+          `${r.allocPerCallKb.toFixed(1).padStart(6)} KB/call ` +
+          `(${r.allocLoKb.toFixed(1)}-${r.allocHiKb.toFixed(1)}), ` +
           `holds ${(r.heldKb / 1024).toFixed(1)} MB, ` +
           `wire ${r.wireKb.toFixed(1)} in / ${r.wireOutKb.toFixed(1)} out KB`,
       );
