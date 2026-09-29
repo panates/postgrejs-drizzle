@@ -234,6 +234,14 @@ function figures(results) {
     pointPairs: point.pairs,
     widthLow: Math.min(...widths.map(w => w.ratio)).toFixed(1),
     widthHigh: Math.max(...widths.map(w => w.ratio)).toFixed(1),
+    // one `int4[]` row survives, the narrow variants having been dropped
+    // once the wide one was shown to be the honest setting - so this used
+    // to print "between 3.8x and 3.8x"
+    widthRange:
+      Math.min(...widths.map(w => w.ratio)).toFixed(1) ===
+      Math.max(...widths.map(w => w.ratio)).toFixed(1)
+        ? `${Math.max(...widths.map(w => w.ratio)).toFixed(1)}x`
+        : `between ${Math.min(...widths.map(w => w.ratio)).toFixed(1)}x and ${Math.max(...widths.map(w => w.ratio)).toFixed(1)}x`,
   };
 }
 
@@ -248,190 +256,87 @@ const list = items =>
  * one makes a claim the next run can overturn - "level" became a win on
  * two scenarios the first time the heap measurement was fixed.
  */
+/**
+ * What the tables mean, in the fewest paragraphs that still say it.
+ *
+ * Generated rather than written, because every claim in here is one the
+ * next run can overturn - two rows went from a loss to level the first
+ * time the client stopped cutting a Buffer per row, and a hand-written
+ * sentence would still be calling them losses.
+ */
 function reading(results) {
   const named = results.scenarios.map(s => ({ ...s, ...speedup(s) }));
   const reads = named.filter(s => s.group === 'Read');
   const writes = named.filter(s => s.group === 'Write');
-  const payload = reads.filter(s => s.ratio > 1.5);
-  const ordinary = reads.filter(s => s.ratio <= 1.5);
-  const leaner = named.filter(s => s.heapSettled && s.heapRatio > 1);
-  const heavier = named.filter(s => s.heapSettled && s.heapRatio < 1);
-  const array = named.find(s => s.name.startsWith('int4[]'));
-  const bytes = named.find(s => s.name.startsWith('bytea of 4MB'));
-
+  // grouped by what the memory column says, not the clock: a row where
+  // this driver allocates a fifth of what `pg` does is a payload row
+  // whatever its ratio, and `float8 of 5k rows` - level on memory - was
+  // being called a payload win for being 1.5x on time
+  const payload = reads.filter(s => s.heapSettled && s.heapRatio >= 1.2);
+  const ordinary = reads.filter(s => !(s.heapSettled && s.heapRatio >= 1.2));
+  const short = name => name.split(' - ')[0];
+  const spread = named.find(s => s.name === 'float8 of 5k rows, full width');
+  const packed = named.find(s => s.name === 'float8[] of 5k in one row');
+  const arrayWrite = writes.find(s => s.name.includes('int4[]'));
+  const bulkWrite = writes.find(s => s.name.includes('500 rows'));
+  const grown = [...named].sort(
+    (a, b) =>
+      b.driver.heldKb - b.control.heldKb - (a.driver.heldKb - a.control.heldKb),
+  )[0];
   const says = s =>
     !s.won
       ? 'level'
       : s.ratio > 1
         ? `${s.ratio.toFixed(2)}x`
         : `${(1 / s.ratio).toFixed(2)}x to \`pg\``;
-  // the row where one client holds most more than the other, which is
-  // the one the buffer paragraph is about
-  const grown = [...named].sort(
-    (a, b) =>
-      b.driver.heldKb - b.control.heldKb - (a.driver.heldKb - a.control.heldKb),
-  )[0];
-  const peakGap = mb(
-    Math.abs(grown.driver.allocPerCallKb - grown.control.allocPerCallKb),
-  );
-  const sustainedLower = named.filter(
-    s => s.driver.sustainedKb < s.control.sustainedKb,
-  );
-  const sustainedHigher = named.filter(
-    s => s.driver.sustainedKb >= s.control.sustainedKb,
-  );
-  // `-29%` where PostgreJS needs less of it, `+25%` where it needs more
-  const sustainedSays = s => {
-    const change =
-      ((s.driver.sustainedKb - s.control.sustainedKb) / s.control.sustainedKb) *
-      100;
-    return `${s.name.split(' - ')[0]} ${change > 0 ? '+' : ''}${change.toFixed(0)}%`;
-  };
-  const decisive = named.every(
-    s => s.sustainedWins === 0 || s.sustainedWins === s.sustainedPairs,
-  );
-  const blobWrite = writes.find(s => s.name.includes('bytea'));
-  const arrayWrite = writes.find(s => s.name.includes('int4[]'));
-  const bulkWrite = writes.find(s => s.name.includes('500 rows'));
 
   const paragraphs = [
-    `**Reading is where the payload decides it.** ${list(
-      payload.map(s => `${s.name.split(' - ')[0]} is ${s.ratio.toFixed(1)}x`),
-    )}. The ordinary shapes move much less - ${list(
-      ordinary.map(s => `${s.name.split(' - ')[0]} ${says(s)}`),
-    )} - because a short result is mostly a round trip, and a round trip is the same round trip.`,
+    `**Large payloads are where it wins, and it wins them by a lot.** ${list(
+      payload.map(
+        s =>
+          `${short(s.name)} ${says(s)} on ${mb(s.driver.allocPerCallKb)} against ${mb(s.control.allocPerCallKb)}`,
+      ),
+    )}. These columns arrive in PostgreSQL's binary format rather than as text to be parsed, and the
+     parse is most of what that saves - \`pg\` has to materialise the whole value as a string
+     first.`,
 
-    `**Writing moves less, and one row goes the other way.** ${list(
-      writes.map(s => `${s.name.split(' - ')[0]} ${says(s)}`),
-    )}. The server does the work in a write - parsing, planning, the heap, the WAL - so a client can
-     only save on its own share of it, and that share is smaller than the decoding it saves on a
-     read.`,
+    `**What decides it is values per row, not values.** ${short(spread.name)} and
+     ${short(packed.name)} hold the same 5000 \`float8\`s and differ in nothing but shape. Spread
+     out, the two are level at ${mb(spread.driver.allocPerCallKb)} against
+     ${mb(spread.control.allocPerCallKb)}, because the protocol's per-row cost is most of what
+     either client pays. Packed into one row it is ${mb(packed.driver.allocPerCallKb)} against
+     ${mb(packed.control.allocPerCallKb)} - and \`pg\` gets worse rather than this driver getting
+     better, because one row of 5000 values is one megabyte of array literal with a substring cut
+     per element.`,
 
-    `**And the wire is the same on both sides of every write.** Counted at the socket: ${kbOrMb(
-      blobWrite.control.wireOutKb,
-    )} for the 4MB \`bytea\`, which each driver sends as binary, and ${kbOrMb(
-      arrayWrite.control.wireOutKb,
-    )} for the 100k \`int4[]\`, which each sends as text. The array is text on purpose - PostgreJS
-     stopped declaring an element type for an array of numbers because \`[1, 2]\` is one of six array
-     types depending on where it lands and they have no casts between them, so declaring \`int4[]\`
-     broke four of the six. With identical bytes going out, what separates the two is
-     the writing of the literal, and that row has moved twice: it was ${says(arrayWrite)} after
-     PostgreJS stopped quoting and re-escaping every element of an array it writes, and was 1.12x to
-     \`pg\` before. Reported from here rather than worked around, measured there, fixed there.`,
+    `**Everything else gains on the clock and not on memory.** ${list(
+      ordinary.map(s => `${short(s.name)} ${says(s)}`),
+    )} - and on memory those rows are level or a few percent the wrong way. A result of many narrow
+     rows is mostly round trips and per-row protocol cost, which is the same work on both sides.`,
 
-    `**Where a write does save bytes, it is the statement and not the data.** ${bulkWrite.name.split(' - ')[0]}
-     sends ${kbOrMb(bulkWrite.driver.wireOutKb)} against ${kbOrMb(bulkWrite.control.wireOutKb)} - the
-     statement itself is 2500 placeholders long, and \`pg\` binds it unnamed, so the server is handed
-     the whole text on every call. PostgreJS names it once and sends Bind and Execute after that.`,
+    `**Writing moves less, because the server does the work.** ${list(
+      writes.map(s => `${short(s.name)} ${says(s)}`),
+    )}. The one that moves on memory is ${short(arrayWrite.name)}, at
+     ${mb(arrayWrite.driver.allocPerCallKb)} against ${mb(arrayWrite.control.allocPerCallKb)}:
+     \`pg\` builds the array literal as a string in the JS heap, PostgreJS writes the integers into
+     the send buffer from the numbers themselves. Reported from here, measured there, fixed there.`,
 
-    `**What a call allocates splits by payload, and by a lot where it splits at all.** PostgreJS
-     allocates less on ${leaner.length} of the ${named.length} scenarios and more on
-     ${heavier.length}, but the sizes are not comparable between the two groups. The wins are the
-     payload rows and they are large - ${list(
-       leaner
-         .filter(
-           s =>
-             s.control.allocPerCallKb > 1024 || s.driver.allocPerCallKb > 1024,
-         )
-         .map(
-           s =>
-             `${s.name.split(' - ')[0]} at ${mb(s.driver.allocPerCallKb)} against ${mb(s.control.allocPerCallKb)}`,
-         ),
-     )}. The losses are the decoded scalar reads, where it builds more per row and the figures are
-     single-digit MB either way: ${list(
-       heavier
-         .filter(
-           s =>
-             s.control.allocPerCallKb > 1024 || s.driver.allocPerCallKb > 1024,
-         )
-         .map(
-           s =>
-             `${s.name.split(' - ')[0]} at ${mb(s.driver.allocPerCallKb)} against ${mb(s.control.allocPerCallKb)}`,
-         ),
-     )}. On the ordinary short rows the two are within tens of KB of each other and the column is
-     not worth reading.`,
+    `**The bytes on the wire are the same, or close.** Both clients send a \`bytea\` as binary and an
+     array as text, so a write saves on the statement rather than the data:
+     ${short(bulkWrite.name)} sends ${kbOrMb(bulkWrite.driver.wireOutKb)} against
+     ${kbOrMb(bulkWrite.control.wireOutKb)} only because \`pg\` binds its 2500 placeholders unnamed
+     and hands the server the whole text every call. Binary is a read-side property of this driver:
+     every parameter it sends is text except a \`Buffer\`, which both send as binary.`,
 
-    `**And what a call allocates is garbage rather than growth.** Between calls the two sit within
-     a few hundred KB of each other on every scenario but the large writes. Measured over 100, 400
-     and 1600 calls of a point read the gap scales with the call count and the between-calls figure
-     does not move, which is what says churn rather than a structure being held.`,
+    `**Memory held is small on both, with one exception.** Between calls the two sit within a few
+     hundred KB of each other everywhere but ${short(grown.name)}, where PostgreJS holds
+     ${mb(grown.driver.heldKb)} against ${mb(grown.control.heldKb)} - one send buffer per
+     connection, grown to the largest message it has written and handed back after five seconds of
+     quiet. Waited out, the same process holds ${mb(grown.driver.idleHeldKb)}.`,
 
-    `**And the large writes are a buffer, not growth.** ${grown.name.split(' - ')[0]} leaves
-     PostgreJS holding ${mb(grown.driver.heldKb)} where \`pg\` holds ${mb(grown.control.heldKb)},
-     which reads as the one place it keeps materially more - and it is one buffer per connection,
-     grown to the largest message it has had to write and handed back after five seconds of quiet.
-     Waited out, the same process holds ${mb(grown.driver.idleHeldKb)} - where \`pg\`, which builds
-     a fresh buffer for each message and drops it, has nothing to give back and reads within a few
-     KB of itself either way. That is also why the two allocate within ${peakGap} of each other on
-     that row while one of them appears to be holding
-     ${mb(grown.driver.heldKb - grown.control.heldKb)} more. Which number is the right one depends
-     on the question: under sustained writes it is the first, for a process that goes quiet between
-     them the second. The read rows shrink on both drivers, so it is only the writes the two of
-     them answer differently.`,
-
-    `**The high-water splits differently from the allocation, and not all one way.** It is where the
-     runtime chose to collect rather than what the client asked for, so the two need not agree.
-     Measured over the same batch - each scenario's own call count, no fewer than 100, three
-     paired repetitions - PostgreJS needs less on ${sustainedLower.length} of the ${named.length}
-     scenarios and more on ${sustainedHigher.length}. Less: ${list(
-       sustainedLower.map(sustainedSays),
-     )}. More: ${list(sustainedHigher.map(sustainedSays))}.${
-       decisive
-         ? ' Every one of those splits was unanimous across the paired runs.'
-         : ''
-     }`,
-
-    `**What decides it is the allocation column, not the buffer reuse.** The rows where PostgreJS
-     needs less are the ones where it hands back a large payload without building a large
-     intermediate - ${kbOrMb(bytes.driver.allocPerCallKb)} a call against
-     ${kbOrMb(bytes.control.allocPerCallKb)} on the 4MB \`bytea\` read, which is the hex string \`pg\`
-     has to materialise and it does not. The rows where it needs more are the ones where it builds
-     more per row, and the sustained figure follows that at a few hundred KB a call. Buffer reuse
-     is real - it is what the held column shows - but it only reaches this number where the
-     message being reused for is itself large.`,
-
-    `**One of those is the high-water's own answer rather than the client's.**
-     ${arrayWrite.name.split(' - ')[0]} peaks at ${mb(arrayWrite.driver.sustainedKb)} against
-     ${mb(arrayWrite.control.sustainedKb)} while sending ${kbOrMb(arrayWrite.driver.wireOutKb)}
-     against ${kbOrMb(arrayWrite.control.wireOutKb)}, and it read the same at 25, 50, 100 and 200
-     calls, so it is not where the batch stops. The allocation column goes the other way and not
-     narrowly: \`pg\` asks for ${kbOrMb(arrayWrite.control.allocPerCallKb)} a call where PostgreJS
-     asks for ${kbOrMb(arrayWrite.driver.allocPerCallKb)}, and a separate \`--trace-gc\` count of the
-     same run agrees at ${kbOrMb(arrayWrite.control.reclaimedKb)} against
-     ${kbOrMb(arrayWrite.driver.reclaimedKb)}. Both are measurements of the same batch. What
-     separates them is that \`pg\` reaches the runtime's collection threshold three times as often
-     and is collected back to a lower line, while PostgreJS asks for a third as much and is allowed
-     to run further up first. The process really does peak higher on this driver; it is not because
-     the driver asked for more, and it only does so here - the same insert on the bare clients with
-     no drizzle in between puts PostgreJS at 37.8 MB against \`pg\`'s 60.6, the counted figures
-     unmoved at 10.12 against 26.92. A high-water is partly a fact about the application around the
-     client, which is worth knowing before carrying one of these rows anywhere.`,
-
-    `**Where that garbage comes from is the array literal, on both sides.** Probed once rather than
-     tabled, so the two figures in it do not move with a re-run: handed the same insert with the
-     literal already built, so that only the send is measured, both clients collect 1.85 MB a call
-     - level to two decimals - and both take 10.5 ms. Handed the array instead, each builds the
-     literal itself, and that one step is the whole of the difference in both columns. Neither
-     client's send path is what separates them here.`,
-
-    `**Why the payload rows separate.** PostgreJS reads and writes these columns in PostgreSQL's
-     binary format where \`pg\` uses text. On the wire that is worth less than it sounds and depends
-     on the values: binary costs 8 bytes an \`int4\` element whatever the number, text a byte a digit,
-     so the full-width array this table uses pulls ${kbOrMb(array.driver.wireKb)} against
-     ${kbOrMb(array.control.wireKb)} while an array of single digits would pull 781 KB against 195
-     and still not lose. A \`bytea\` has no such freedom - \`\\x\`-prefixed hex is two characters a byte
-     whatever the bytes are - so there the saving is fixed at half: ${kbOrMb(bytes.control.wireKb)}
-     against ${kbOrMb(bytes.driver.wireKb)}.`,
-
-    `**What it is winning is mostly the parse, not the bytes.** The text path materialises the whole
-     value as a string and walks it; the binary path reads it out of the buffer it already has. That
-     is also why it allocates ${kbOrMb(array.driver.allocPerCallKb)} a call against
-     ${kbOrMb(array.control.allocPerCallKb)} on the array, and why the single-digit case - where it pulls
-     four times the bytes \`pg\` does - was still not behind when it was measured.`,
-
-    `**Where it reaches you.** Through drizzle, these are \`bytea\` columns, array columns, and
+    `**Where it reaches you.** Through drizzle, the wins are \`bytea\` columns, array columns, and
      anything large in a raw \`db.execute()\`. A schema of text, integers and timestamps sees the
-     ordinary rows and not the payload ones.`,
+     ordinary rows and not the payload ones - a little faster, and about the same memory.`,
   ];
 
   return paragraphs.map(paragraph => wrap(paragraph)).join('\n\n');
@@ -439,10 +344,6 @@ function reading(results) {
 
 function document(results) {
   const { versions } = results;
-  const by = name => results.scenarios.find(s => s.name.startsWith(name));
-  const blobWrite = speedup(by('insert a 4MB bytea'));
-  const byName = name => speedup(by(name));
-  const kb = value => (value >= 1024 ? mb(value) : `${value.toFixed(0)} KB`);
   return `# The same drizzle calls, on both drivers
 
 _Generated by \`npm run bench:report\` from the last \`npm run bench\`. Do not hand-edit - re-run the
@@ -460,77 +361,23 @@ npm run bench:report   # render this file and the README's tables
 
 ## Method
 
-\`benchmark/drizzle-bench.mjs\` builds one table of nine mixed-type columns, seeds it, and runs every
-scenario through both drivers **in one process**, alternating them inside every pair and swapping
-which goes first each time, so an ordering artifact - a cold cache, a busy moment on the machine -
-lands on both equally.
+${wrap(`Every scenario runs through both drivers against the same server, alternating them inside each
+pair and swapping which goes first, so a cold cache or a busy moment lands on both equally. The
+medians are what the tables print; the sign test beside them counts only **which** driver won each
+pair, which is what survives a shared machine - the same \`pg\` point read has come out at 0.270 ms,
+0.521 ms and 0.508 ms across three runs of the same code, while the winner did not change.`)}
 
-The medians alone would not be worth much. This is a shared machine, and the absolute figures drift:
-the same \`node-postgres\` point read has come out at 0.270 ms, 0.521 ms and 0.508 ms across three runs
-of the same code. What does not drift is **which** driver won each pair, so that is counted
-separately, and a sign test asks how likely that split would be from a fair coin. Only the winner
-counts and by how much is thrown away, which is exactly what lets it survive a noisy machine: it says
-whether a difference is real, and says nothing about its size - that is what the median column is
-for.
+${wrap(`**Two numbers per row.** The time is one call. The memory is what one call **asks for** -
+everything allocated while it runs, whether or not any of it survives - measured in a process of its
+own per driver, so a client's own buffers are inside the window rather than under it. A call is one
+\`db.execute()\` or one \`db.transaction()\`; where that is more than one query the scenario's name
+says so. Nothing here is the cost of running a scenario end to end.`)}
 
-${wrap(`**The allocation column is a rate, not a total.** It is what **one call** asks for, and a call is
-one \`db.execute()\` or one \`db.transaction()\` - which is one query on eleven of the thirteen rows
-and is spelled out in the scenario's own name on the two where it is not. Nothing in the table is
-the cost of running a scenario end to end; the batch length is a property of the harness, not of
-the work, so a total over it would say more about how long this file chose to run than about either
-client.`)}
-
-${wrap(`**What it counts is everything a call asks for in total, measured over a batch rather than over one
-call.** Every fall in \`heapUsed + external\` is a collection handing memory back;
-summed across the batch and added to what the heap still holds at the end, that is everything the
-calls allocated, whether or not any of it survived. Nothing in it depends on where a collection
-happens to land.`)}
-
-${wrap(`**A per-call figure was tried first and is not measurable**, which is worth writing down because
-the number it produced was quoted here for several revisions. Measured as one call above a forced
-collection, it failed three separate ways. Sampled at 1ms it mostly sampled nothing: a \`point read\`
-returns in 0.6ms and took zero samples in five rounds of five, printing 0 KB for a call that
-allocates about 30, and \`page of 200\` printed 282 KB against 41 - a \`-85%\` that was two coin
-flips against the ${kb(byName('page of 200').control.allocPerCallKb)} and ${kb(byName('page of 200').driver.allocPerCallKb)} it really is. Sampled over a longer call it still
-understated, and unevenly: on the 4MB \`bytea\` read it caught 24.7 MB of pg's 53.5 while catching
-8.2 of PostgreJS's 8.4, which moves the comparison and not only the figure. Read exactly at the end
-of the call instead, the baseline is the problem - the first call after a collection costs 52.5 KB
-where the fourth costs 29.6, and by a different factor on each client. Spending calls to settle that
-fixes the short rows and ruins the large ones, because a 50 MB call with no collection in front of
-it meets one inside it and the delta comes back at 759 KB or negative. The two failures are
-mutually exclusive, so the column is gone rather than patched.`)}
-
-${wrap(`**It is checked against two instruments that share none of its machinery.** The children run under
-\`--trace-gc\` and the parent adds up what each collection reported handing back; on the rows made of
-strings the two agree closely - ${kbOrMb(byName('insert a 100k int4[]').control.allocPerCallKb)} against ${kbOrMb(byName('insert a 100k int4[]').control.reclaimedKb)} traced on the 100k \`int4[]\` write,
-${kbOrMb(byName('int4[] of 100k, full width').control.allocPerCallKb)} against ${kbOrMb(byName('int4[] of 100k, full width').control.reclaimedKb)} reading one back. Where they part is where
-\`--trace-gc\` is blind: it reports the JS heap only, so a \`Buffer\` is invisible to it and it reads
-${kbOrMb(byName('bytea of 4MB').control.reclaimedKb)} a call on the 4MB \`bytea\` read against the ${kbOrMb(byName('bytea of 4MB').control.allocPerCallKb)} actually moved. That is the
-\`heapUsed\`-without-\`external\` error in a better-looking instrument, and it is why the traced figure
-is recorded in \`benchmark/results/latest.json\` as \`reclaimedKb\` rather than printed as a column.
-The second check is the floor: the same point read on bare clients with no drizzle over them
-allocates 15.9 KB and 20.3 KB, against ${kb(byName('point read').control.allocPerCallKb)} and ${kb(byName('point read').driver.allocPerCallKb)} here, so the tens of KB a small
-query costs are real and mostly not this driver's.`)}
-
-${wrap(`**The high-water column answers a different question and ranks the drivers differently on
-purpose.** It is the highest \`heapUsed + external\` the same batch reached with nothing collected on
-command, which is what the process has to be able to hold. It is not a second opinion on allocation:
-it is where the runtime chose to collect. A client that allocates a third as much reaches the
-threshold a third as often and is allowed to run further up first, so the two columns can and do
-disagree - the 100k \`int4[]\` write is the row where they disagree outright. Read together they
-say what a caller needs to know; read alone either one misleads.`)}
-
-${wrap(`RSS is sampled in the same pass and is **not** a column, because it did not measure this. It runs
-three to six times the live figure on both drivers - ${mb(blobWrite.control.sustainedRssKb)}
-against ${mb(blobWrite.driver.sustainedRssKb)} on the 4MB \`bytea\` write - and it moves with V8's
-reserved heap and the allocator's retained pages rather than with what the client is holding; over a
-batch-length sweep it wandered by 80 MB on one driver while the live figure moved by 8. It is in the
-results file for anyone who wants it.`)}
-
-${wrap(`Latency and memory are separate passes. Polling \`process.memoryUsage()\` inside the timed window
-costs more than the calls being timed and lands unevenly on the two drivers; an early revision of
-this file did exactly that and reported a 2x that was its own. The memory pass forces a collection
-to take its baseline, so it needs \`--expose-gc\` to mean anything.`)}
+${wrap(`Memory has more than one honest answer, so the table below the results carries three: what a
+client keeps between calls, what a call allocates, and how high the process goes before the runtime
+collects. They rank the drivers differently and are meant to - the last one is partly a fact about
+the application around the client. \`benchmark/heap-worker.mjs\` has the rest, including a per-call
+peak column that was quoted here for several revisions before it turned out not to be measurable.`)}
 
 ## Results
 
@@ -682,9 +529,9 @@ readme = replaceRegion(
   wrap(`It is faster where it counts, and it holds far less memory doing it. A 4MB \`bytea\` comes back
 in ${f.bytesDriverMs} ms against ${f.bytesControlMs} ms, and at ${f.bytesDriverHeap} against ${f.bytesControlHeap} - \`pg\`
 holds that column as hex text, twice the size, off the JS heap where a heap figure alone cannot see
-it. A 100k-element \`int4[]\` runs between ${f.widthLow}x and ${f.widthHigh}x depending on how much of the type its
-values use, at ${f.arrayDriverHeap} against ${f.arrayControlHeap} on the widest of them - the range is quoted rather
-than a single figure because the values decide it, not the driver. Ordinary queries gain less and
+it. A 100k-element \`int4[]\` runs ${f.widthRange}, at ${f.arrayDriverHeap} against
+${f.arrayControlHeap} - values that use the whole type on purpose, because a column of single digits
+is shorter as text than as binary and quoting that would be choosing the answer. Ordinary queries gain less and
 gain it repeatably: a point read is the faster of the two in ${f.pointWins} of ${f.pointPairs} alternated pairs.
 All of it measured through drizzle against \`drizzle-orm/node-postgres\` on the same server:
 [\`doc/BENCHMARKS.md\`](doc/BENCHMARKS.md).`),
@@ -712,7 +559,7 @@ readme = replaceRegion(
   readme,
   'payload',
   wrap(
-    `- **Faster where the payload is large** - ${f.bytesRatio}x on a 4MB \`bytea\`, and ${f.widthLow}x to ${f.widthHigh}x on a 100k-element \`int4[]\` according to how much of the type its values use, on a fraction of the memory, because the values arrive in PostgreSQL's binary format rather than as text to be parsed.`,
+    `- **Faster where the payload is large** - ${f.bytesRatio}x on a 4MB \`bytea\`, and ${f.widthRange} on a 100k-element \`int4[]\` whose values use the whole type, on a fraction of the memory, because the values arrive in PostgreSQL's binary format rather than as text to be parsed.`,
     98,
   ).replace(/\n/g, '\n  '),
 );
