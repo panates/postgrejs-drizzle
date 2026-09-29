@@ -90,6 +90,16 @@ export const DDL = [
      select (random() * 1e9)::float8 as f,
             gen_random_uuid() as u
      from generate_series(1, 5000) i`,
+  // the same 5000 float8s as `scalars`, in one row instead of 5000, so
+  // the pair differs in shape and in nothing else - `external` for the
+  // reason the other payload tables have it, decompression is not what
+  // is being compared
+  `drop table if exists ${SCHEMA}.float8_array`,
+  `create table ${SCHEMA}.float8_array as
+     select array_agg(f) as v from ${SCHEMA}.scalars`,
+  `alter table ${SCHEMA}.float8_array alter column v set storage external`,
+  `update ${SCHEMA}.float8_array set v = v`,
+
   `drop table if exists ${SCHEMA}.boxes`,
   `create table ${SCHEMA}.boxes as
      select box(point(random() * 1e6, random() * 1e6),
@@ -127,7 +137,7 @@ export const SCENARIOS = [
   {
     name: 'point read',
     group: 'Read',
-    note: 'one row by primary key',
+    note: '1 row of 9 columns',
     iters: 50,
     pairs: 101,
     run: (db, i) =>
@@ -138,7 +148,7 @@ export const SCENARIOS = [
   {
     name: 'page of 200',
     group: 'Read',
-    note: 'nine columns, mixed types',
+    note: '200 rows of 9 columns, mixed types',
     iters: 20,
     pairs: 101,
     run: (db, i) =>
@@ -149,7 +159,7 @@ export const SCENARIOS = [
   {
     name: 'concurrent reads',
     group: 'Read',
-    note: 'one call is 20 point reads at once, pool of 10',
+    note: '20 reads at once of 1 row each, pool of 10',
     iters: 4,
     pairs: 61,
     pooled: true,
@@ -175,7 +185,7 @@ export const SCENARIOS = [
   {
     name: 'int4[] of 100k, full width',
     group: 'Read',
-    note: 'values that use the whole type',
+    note: '1 row holding 1 array of 100 000 values that use the whole type',
     iters: 3,
     pairs: 41,
     run: db =>
@@ -209,7 +219,7 @@ export const SCENARIOS = [
   {
     name: 'float8 of 5k rows, full width',
     group: 'Read',
-    note: 'eight bytes against seventeen significant digits',
+    note: '5000 rows of 1 value, eight bytes against seventeen significant digits',
     iters: 10,
     pairs: 61,
     run: db =>
@@ -217,10 +227,29 @@ export const SCENARIOS = [
         sql`select f as v from ${sql.raw(SCHEMA)}.scalars limit ${5000}`,
       ),
   },
+  /**
+   * The same values as the row above, in one row rather than 5000, and
+   * it is here because the pair answers a question neither row can on
+   * its own: what the binary format is worth depends on how many values
+   * share a row, not on how many values there are. Spread out, the
+   * protocol's per-row cost is most of what either client pays and the
+   * two are level. Packed, `pg` has to build a megabyte of array literal
+   * and cut a substring per element where this driver reads each one out
+   * of the buffer it already has.
+   */
+  {
+    name: 'float8[] of 5k in one row',
+    group: 'Read',
+    note: '1 row holding 1 array of the same 5000 values',
+    iters: 10,
+    pairs: 61,
+    run: db =>
+      db.execute(sql`select v from ${sql.raw(SCHEMA)}.float8_array limit ${1}`),
+  },
   {
     name: 'uuid of 5k rows',
     group: 'Read',
-    note: 'sixteen bytes against thirty-six characters',
+    note: '5000 rows of 1 value, sixteen bytes against thirty-six characters',
     iters: 10,
     pairs: 61,
     run: db =>
@@ -231,7 +260,7 @@ export const SCENARIOS = [
   {
     name: 'box of 5k rows',
     group: 'Read',
-    note: 'four float8s against coordinates that use them',
+    note: '5000 rows of 1 value, four float8s against coordinates that use them',
     iters: 10,
     pairs: 61,
     run: db =>
@@ -246,7 +275,7 @@ export const SCENARIOS = [
   {
     name: 'bytea of 4MB',
     group: 'Read',
-    note: 'large enough to be the whole cost',
+    note: '1 row holding 1 value of 4 MB',
     iters: 3,
     pairs: 41,
     run: db =>
@@ -277,7 +306,7 @@ export const SCENARIOS = [
    */
   {
     name: 'insert one row',
-    note: 'six parameters',
+    note: '1 row, six parameters',
     group: 'Write',
     iters: 50,
     pairs: 101,
@@ -292,7 +321,7 @@ export const SCENARIOS = [
   },
   {
     name: 'insert 500 rows',
-    note: 'one statement, 2500 parameters, values that fill their types',
+    note: '500 rows in 1 statement, 2500 parameters that fill their types',
     group: 'Write',
     iters: 4,
     pairs: 61,
@@ -317,7 +346,7 @@ export const SCENARIOS = [
   },
   {
     name: 'insert a 4MB bytea',
-    note: 'one parameter, and binary on both sides',
+    note: '1 row holding 1 value of 4 MB, binary on both sides',
     group: 'Write',
     iters: 3,
     pairs: 41,
@@ -329,7 +358,7 @@ export const SCENARIOS = [
   },
   {
     name: 'insert a 100k int4[]',
-    note: 'one parameter, and text on both sides - see below',
+    note: '1 row holding 1 array of 100 000 values, text on both sides - see below',
     group: 'Write',
     iters: 3,
     pairs: 41,
@@ -341,7 +370,7 @@ export const SCENARIOS = [
   },
   {
     name: 'twenty inserts in a transaction',
-    note: 'one call is a begin, twenty inserts and a commit',
+    note: '20 rows, one statement each, inside one transaction',
     group: 'Write',
     iters: 4,
     pairs: 61,
