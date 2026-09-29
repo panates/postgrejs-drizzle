@@ -9,7 +9,7 @@ import type {
 import { PgPreparedQuery } from 'drizzle-orm/pg-core';
 import { fillPlaceholders, type Query } from 'drizzle-orm/sql';
 import type { QueryOptions } from 'postgrejs';
-import { DatabaseError } from 'postgrejs';
+import { DatabaseError, isMultiStatement } from 'postgrejs';
 import type { PgjsClient } from './config.js';
 import { MULTIPLE_COMMANDS_ERROR_CODE } from './constants.js';
 import {
@@ -167,13 +167,29 @@ export class PgjsPreparedQuery<
    * query goes over the simple protocol; `query()` here is always the
    * extended one, which answers 42601 and runs nothing.
    *
-   * `execute()` is PostgreJS's counterpart, and falling back to it on that
-   * one SQLSTATE needs no SQL parsing and repeats no side effect: the
-   * server raises it while parsing, before any statement has run. It takes
-   * no parameters, hence the length check - which costs nothing, since
-   * only a parameterless call could have carried several statements.
+   * `execute()` is PostgreJS's counterpart, and since 3.11.0 the client
+   * also answers which of the two a given string needs, so the choice is
+   * made before anything is sent rather than after a round trip has come
+   * back refused. `isMultiStatement()` is a scanner over the quoting rules
+   * a `;` can hide inside - string and dollar-quoted literals, quoted
+   * identifiers, both comment forms - not a guess from whether parameters
+   * happen to be present, which is what `pg` decides on.
+   *
+   * Only a parameterless call can take that road: `execute()` sends a
+   * simple `Query`, which carries no parameters, so a multi-statement call
+   * that has some still goes to `query()` and gets the server's own error
+   * rather than a worse one from here.
+   *
+   * The 42601 fallback stays behind it for the one case the scanner can be
+   * wrong in - it reads `\'` as an escape, which under
+   * `standard_conforming_strings = off` it is not. Retrying costs nothing
+   * and repeats no side effect: the server raises 42601 while parsing,
+   * before any statement has run.
    */
   protected async _executeRaw(params: unknown[]): Promise<T['execute']> {
+    if (params.length === 0 && isMultiStatement(this._sql))
+      return this._executeScript();
+
     try {
       return toQueryResult(
         await this._client.query(this._sql, {
@@ -189,12 +205,17 @@ export class PgjsPreparedQuery<
         error.code !== MULTIPLE_COMMANDS_ERROR_CODE
       )
         throw error;
-      return toQueryResults(
-        await this._client.execute(this._sql, {
-          ...this._queryOptions,
-          objectRows: true,
-        }),
-      );
+      return this._executeScript();
     }
+  }
+
+  /** The simple-protocol road, and one result per statement. */
+  protected async _executeScript(): Promise<T['execute']> {
+    return toQueryResults(
+      await this._client.execute(this._sql, {
+        ...this._queryOptions,
+        objectRows: true,
+      }),
+    );
   }
 }

@@ -188,7 +188,7 @@ say "Installing the suite's dependencies"
   postgrejs dockerode get-port uuid)
 
 say "Building this driver"
-(cd "$REPO_DIR" && npm run build >/dev/null)
+(cd "$REPO_DIR" && npx rman build >/dev/null)
 
 # A real directory rather than a link, so the driver resolves drizzle-orm
 # and postgrejs from the suite's own node_modules - one copy of each, shared

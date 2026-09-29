@@ -12,11 +12,25 @@
  *   node --expose-gc benchmark/drizzle-bench.mjs
  *   node --expose-gc benchmark/drizzle-bench.mjs --repeats=7 --scenario=page
  */
-import { sql } from 'drizzle-orm';
-import { drizzle as drizzleNodePg } from 'drizzle-orm/node-postgres';
+import { execFile } from 'node:child_process';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import { Pool as PgPool } from 'pg';
-import { Pool as PgjsPool } from 'postgrejs';
-import { drizzle as drizzlePgjs } from '../build/index.js';
+import {
+  CONN,
+  CONTROL,
+  DDL,
+  describeScenarios,
+  DRIVER,
+  openDatabases,
+  scenariosMatching,
+  SCHEMA,
+} from './scenarios.mjs';
+
+const run = promisify(execFile);
+const HEAP_WORKER = new URL('./heap-worker.mjs', import.meta.url).pathname;
+
+const RESULTS_FILE = new URL('./results/latest.json', import.meta.url);
 
 const arg = (name, fallback) => {
   const hit = process.argv.find(a => a.startsWith(`--${name}=`));
@@ -24,106 +38,8 @@ const arg = (name, fallback) => {
 };
 
 const PAIRS = Number(arg('pairs', 0)); // 0: each scenario's own
+const HEAP_PAIRS = Number(arg('heap-pairs', 15));
 const ONLY = arg('scenario', 'all');
-const SCHEMA = 'bench_drizzle';
-const SEED_ROWS = 5000;
-
-const CONN = {
-  host: process.env.PGHOST ?? '127.0.0.1',
-  port: Number(process.env.PGPORT ?? 5432),
-  user: process.env.PGUSER ?? 'postgres',
-  password: process.env.PGPASSWORD ?? 'postgres',
-  database: process.env.PGDATABASE ?? 'postgres',
-};
-
-const DDL = [
-  `create schema if not exists ${SCHEMA}`,
-  `drop table if exists ${SCHEMA}.rows`,
-  `create table ${SCHEMA}.rows (
-     id serial primary key,
-     name text not null,
-     email text not null,
-     age integer,
-     balance numeric(14, 2),
-     created timestamptz not null default now(),
-     tags text[],
-     meta jsonb,
-     active boolean not null default true
-   )`,
-  `insert into ${SCHEMA}.rows (name, email, age, balance, tags, meta)
-     select 'name ' || i, 'user' || i || '@example.com', (i % 80) + 18,
-            (i % 100000)::numeric / 100, array['a', 'b', 'c'],
-            jsonb_build_object('i', i, 'nested', jsonb_build_object('k', 'v'))
-     from generate_series(1, ${SEED_ROWS}) as i`,
-];
-
-/** Each one is a single drizzle call, the way a caller would write it. */
-const SCENARIOS = [
-  {
-    name: 'point read',
-    note: 'one row by primary key',
-    iters: 50,
-    pairs: 101,
-    run: (db, i) =>
-      db.execute(
-        sql`select * from ${sql.raw(SCHEMA)}.rows where id = ${(i % SEED_ROWS) + 1}`,
-      ),
-  },
-  {
-    name: 'page of 200',
-    note: 'nine columns, mixed types',
-    iters: 20,
-    pairs: 101,
-    run: (db, i) =>
-      db.execute(
-        sql`select * from ${sql.raw(SCHEMA)}.rows order by id offset ${(i % 10) * 200} limit 200`,
-      ),
-  },
-  {
-    name: 'insert returning',
-    note: 'six parameters',
-    iters: 50,
-    pairs: 101,
-    run: (db, i) =>
-      db.execute(
-        sql`insert into ${sql.raw(SCHEMA)}.rows (name, email, age, balance, tags, meta)
-            values (${'n' + i}, ${'e' + i + '@example.com'}, ${(i % 60) + 18},
-                    ${'12.34'}, ${'{a,b}'}, ${'{"i":1}'})
-            returning id`,
-      ),
-  },
-  {
-    name: 'concurrent reads',
-    note: '20 point reads at once, pool of 10',
-    iters: 4,
-    pairs: 61,
-    pooled: true,
-    run: (db, i) =>
-      Promise.all(
-        Array.from({ length: 20 }, (_, k) =>
-          db.execute(
-            sql`select * from ${sql.raw(SCHEMA)}.rows where id = ${((i * 20 + k) % SEED_ROWS) + 1}`,
-          ),
-        ),
-      ),
-  },
-  {
-    name: 'int4[] of 100k',
-    note: 'one array column',
-    iters: 3,
-    pairs: 41,
-    run: db =>
-      db.execute(sql`select array(select generate_series(1, 100000)) as v`),
-  },
-  {
-    name: 'bytea of 4MB',
-    note: 'one binary column',
-    iters: 3,
-    pairs: 41,
-    run: db => db.execute(sql`select repeat('x', 4194304)::bytea as v`),
-  },
-];
-
 /**
  * One timed batch. Nothing is sampled while it runs: polling
  * `process.memoryUsage()` inside the timed window costs more than the
@@ -131,26 +47,79 @@ const SCENARIOS = [
  * made an early revision of this file report a 2x that was its own.
  */
 async function timedBatch(scenario, db) {
+  // outside the clock on purpose: emptying the target is not the work
+  if (scenario.setup) await scenario.setup(db);
   const started = performance.now();
   for (let i = 0; i < scenario.iters; i++) await scenario.run(db, i);
   return (performance.now() - started) / scenario.iters;
 }
 
 /**
- * The most `heapUsed` rose above a forced-GC baseline while the same batch
- * ran, polled. Run on its own, never against the clock.
+ * Peak heap for one driver, measured in a process of its own.
+ *
+ * In-process measurement cannot see what a client allocates once and
+ * keeps, because the baseline is taken with both of them already up. A
+ * child per driver - which is how postgrejs's own suite does it - puts
+ * the whole cost inside the window.
  */
-async function heapBatch(scenario, db) {
-  let peak = 0;
-  globalThis.gc?.();
-  const base = process.memoryUsage().heapUsed;
-  const poll = setInterval(() => {
-    const delta = process.memoryUsage().heapUsed - base;
-    if (delta > peak) peak = delta;
-  }, 5);
-  for (let i = 0; i < scenario.iters; i++) await scenario.run(db, i);
-  clearInterval(poll);
-  return peak / 1024;
+async function memoryInChild(scenario, driver) {
+  const { stdout } = await run(
+    process.execPath,
+    ['--expose-gc', '--trace-gc', HEAP_WORKER, driver, scenario.name],
+    { env: process.env, maxBuffer: 64 * 1024 * 1024 },
+  );
+  const measured = JSON.parse(
+    stdout.split('\n').find(line => line.startsWith('{')),
+  );
+  return { ...measured, reclaimedKb: reclaimedBetweenMarks(stdout) };
+}
+
+/**
+ * What the same client still holds once the calls stop. One run per
+ * driver per scenario rather than one per pair: it is a wall-clock wait,
+ * and unlike the peak it does not move between pairs.
+ */
+async function idleHeapInChild(scenario, driver) {
+  const { stdout } = await run(
+    process.execPath,
+    ['--expose-gc', HEAP_WORKER, driver, scenario.name, 'idle'],
+    { env: process.env },
+  );
+  const { idleHeldKb } = JSON.parse(stdout);
+  return idleHeldKb;
+}
+
+/**
+ * The high-water mark of a run with nothing collected inside it - what
+ * the process has to be able to hold while the calls keep coming, which
+ * is a different question from what one call adds to a clean heap and
+ * answers it differently. Paired and alternated like the timings, three
+ * repetitions, median: fewer than the timings because the splits it
+ * produces are 9-0 rather than close.
+ */
+/**
+ * What every collection handed back while the measured calls were running,
+ * added up, from `--trace-gc`'s `before (capacity) -> after (capacity) MB`.
+ *
+ * This is the column the divided high-water was trying to be and could
+ * not: a high-water is where the runtime chose to collect, so it is not
+ * additive and two clients can swap places on it without either
+ * allocating differently. This one repeats to two decimals across runs.
+ */
+function reclaimedBetweenMarks(stdout) {
+  const mark = Number(/MARK (\d+)/.exec(stdout)?.[1]);
+  const end = Number(/END (\d+)/.exec(stdout)?.[1]);
+  if (!Number.isFinite(mark) || !Number.isFinite(end)) return 0;
+  const line =
+    /^\[\d+:0x[0-9a-f]+\]\s+(\d+) ms: \S+.*?([\d.]+) \([\d.]+\) -> ([\d.]+) \(/;
+  let total = 0;
+  for (const text of stdout.split('\n')) {
+    const found = line.exec(text);
+    if (!found) continue;
+    const at = Number(found[1]);
+    if (at >= mark && at <= end) total += Number(found[2]) - Number(found[3]);
+  }
+  return total * 1024;
 }
 
 const median = xs => {
@@ -186,38 +155,69 @@ function odds(p) {
 }
 
 async function main() {
-  const pgPool = new PgPool({ ...CONN, max: 1 });
-  const jsPool = new PgjsPool({ ...CONN, pool: { max: 1 } });
-  const pgPoolN = new PgPool({ ...CONN, max: 10 });
-  const jsPoolN = new PgjsPool({ ...CONN, pool: { max: 10 } });
-  const dbs = {
-    'node-postgres': drizzleNodePg(pgPool, { logger: false }),
-    'this driver': drizzlePgjs(jsPool, { logger: false }),
-  };
-  // the same two drivers over a pool of ten, for the concurrent scenario
-  const pooled = {
-    'node-postgres': drizzleNodePg(pgPoolN, { logger: false }),
-    'this driver': drizzlePgjs(jsPoolN, { logger: false }),
-  };
+  const { dbs, close } = openDatabases(false);
+  const { dbs: pooled, close: closePooled } = openDatabases(true);
   const dbFor = (scenario, name) =>
     scenario.pooled ? pooled[name] : dbs[name];
 
+  const pgPool = new PgPool({ ...CONN, max: 1 });
   for (const statement of DDL) await pgPool.query(statement);
 
-  const scenarios = SCENARIOS.filter(
-    s => ONLY === 'all' || s.name.replaceAll(' ', '-').includes(ONLY),
-  );
-  const names = Object.keys(dbs);
+  const scenarios = scenariosMatching(ONLY);
+  const names = [CONTROL, DRIVER];
   const results = [];
+
+  // what is about to be measured, in the SQL each scenario really sends -
+  // shortened, because one of them carries 1500 placeholders and another
+  // 100000 parameters
+  const shorten = (text, limit = 150) => {
+    const oneLine = text.replace(/\s+/g, ' ').trim();
+    return oneLine.length > limit
+      ? `${oneLine.slice(0, limit)} … (${oneLine.length} chars)`
+      : oneLine;
+  };
+  const describeParams = params => {
+    if (!params.length) return '';
+    const shown = params
+      .slice(0, 4)
+      .map(p =>
+        Array.isArray(p)
+          ? `array[${p.length}]`
+          : Buffer.isBuffer(p)
+            ? `buffer[${p.length}]`
+            : JSON.stringify(p),
+      )
+      .join(', ');
+    return `    ${params.length} param${params.length > 1 ? 's' : ''}: ${shown}${params.length > 4 ? ', …' : ''}`;
+  };
+
+  console.log('\nscenarios');
+  let group;
+  for (const { scenario, query, params, calls } of await describeScenarios(
+    scenarios,
+  )) {
+    if (scenario.group !== group) {
+      group = scenario.group;
+      console.log(`\n  ${group ?? 'Other'}`);
+    }
+    console.log(`\n    ${scenario.name} - ${scenario.note}`);
+    console.log(
+      `      ${scenario.iters} calls per timed unit, ${scenario.pairs} pairs` +
+        (calls > 1 ? `, ${calls} statements a call` : ''),
+    );
+    console.log(`      ${shorten(query)}`);
+    const described = describeParams(params);
+    if (described) console.log(`  ${described}`);
+  }
 
   for (const scenario of scenarios) {
     const pairs = PAIRS || scenario.pairs;
     for (const name of names) {
+      if (scenario.setup) await scenario.setup(dbFor(scenario, name));
       for (let i = 0; i < Math.min(scenario.iters * 4, 60); i++)
         await scenario.run(dbFor(scenario, name), i);
     }
     const samples = { [names[0]]: [], [names[1]]: [] };
-    const heaps = { [names[0]]: [], [names[1]]: [] };
     let wins = 0;
     for (let pair = 0; pair < pairs; pair++) {
       // swap the order every pair, so neither driver always runs first
@@ -227,39 +227,159 @@ async function main() {
         timed[name] = await timedBatch(scenario, dbFor(scenario, name));
       for (const name of names) samples[name].push(timed[name]);
       if (timed[names[1]] < timed[names[0]]) wins++;
-      // heap on its own pass, and only a few times - it is the slower one
-      if (pair % Math.ceil(pairs / 5) === 0)
-        for (const name of order)
-          heaps[name].push(await heapBatch(scenario, dbFor(scenario, name)));
     }
+
+    // and the memory, one child process per driver per pair
+    const held = { [names[0]]: [], [names[1]]: [] };
+    const alloc = { [names[0]]: [], [names[1]]: [] };
+    const sustained = { [names[0]]: [], [names[1]]: [] };
+    const sustainedRss = { [names[0]]: [], [names[1]]: [] };
+    const reclaimed = { [names[0]]: [], [names[1]]: [] };
+    const wire = { [names[0]]: [], [names[1]]: [] };
+    const wireOut = { [names[0]]: [], [names[1]]: [] };
+    let memoryCalls = 0;
+    let allocWins = 0;
+    let sustainedWins = 0;
+    for (let pair = 0; pair < HEAP_PAIRS; pair++) {
+      const order = pair % 2 ? [names[1], names[0]] : names;
+      const measured = {};
+      for (const name of order)
+        measured[name] = await memoryInChild(scenario, name);
+      for (const name of names) {
+        held[name].push(measured[name].heldKb);
+        alloc[name].push(measured[name].allocPerCallKb);
+        sustained[name].push(measured[name].sustainedKb);
+        sustainedRss[name].push(measured[name].sustainedRssKb);
+        reclaimed[name].push(
+          measured[name].reclaimedKb / measured[name].iterations,
+        );
+        wire[name].push(measured[name].wireKb);
+        wireOut[name].push(measured[name].wireOutKb);
+        memoryCalls = measured[name].iterations;
+      }
+      // on what a call allocates, because that is the column the report
+      // leads with - the high-water is counted separately below, since
+      // the two rank the drivers differently on purpose
+      if (measured[names[1]].allocPerCallKb < measured[names[0]].allocPerCallKb)
+        allocWins++;
+      if (measured[names[1]].sustainedKb < measured[names[0]].sustainedKb)
+        sustainedWins++;
+    }
+
+    const idleHeld = {};
+    for (const name of names)
+      idleHeld[name] = await idleHeapInChild(scenario, name);
+
     results.push({
       scenario,
       pairs,
       wins,
       p: signTest(wins, pairs),
+      heapPairs: HEAP_PAIRS,
+      memoryCalls,
+      sustainedWins,
+      heapWins: allocWins,
+      heapP: signTest(allocWins, HEAP_PAIRS),
       rows: names.map(name => ({
         name,
         ms: median(samples[name]),
         lo: Math.min(...samples[name]),
         hi: Math.max(...samples[name]),
-        peakKb: median(heaps[name]),
+        allocPerCallKb: median(alloc[name]),
+        allocLoKb: Math.min(...alloc[name]),
+        allocHiKb: Math.max(...alloc[name]),
+        heldKb: median(held[name]),
+        idleHeldKb: idleHeld[name],
+        sustainedKb: median(sustained[name]),
+        sustainedRssKb: median(sustainedRss[name]),
+        reclaimedKb: median(reclaimed[name]),
+        wireKb: median(wire[name]),
+        wireOutKb: median(wireOut[name]),
       })),
     });
   }
 
+  await close();
+  await closePooled();
+
   await pgPool.query(`drop schema ${SCHEMA} cascade`);
   await pgPool.end();
-  await jsPool.close(true);
-  await pgPoolN.end();
-  await jsPoolN.close(true);
+
+  // read off disk rather than imported: drizzle-orm's `exports` map does
+  // not expose its own package.json, and an import of it throws
+  const versionOf = async name =>
+    JSON.parse(
+      await readFile(
+        new URL(`../node_modules/${name}/package.json`, import.meta.url),
+        'utf8',
+      ),
+    ).version;
+  const versions = {
+    node: process.version,
+    postgrejs: await versionOf('postgrejs'),
+    pg: await versionOf('pg'),
+    drizzle: await versionOf('drizzle-orm'),
+  };
+
+  // the run's own record, so `npm run bench:report` can render it without
+  // running anything - and so nothing has to be copied by hand
+  await mkdir(new URL('.', RESULTS_FILE), { recursive: true });
+  await writeFile(
+    RESULTS_FILE,
+    JSON.stringify(
+      {
+        measuredAt: new Date().toISOString(),
+        versions,
+        scenarios: results.map(
+          ({
+            scenario,
+            pairs,
+            wins,
+            p,
+            heapPairs,
+            memoryCalls,
+            heapWins,
+            heapP,
+            sustainedWins,
+            rows,
+          }) => ({
+            name: scenario.name,
+            note: scenario.note,
+            group: scenario.group,
+            iters: scenario.iters,
+            pairs,
+            wins,
+            p,
+            heapPairs,
+            memoryCalls,
+            heapWins,
+            heapP,
+            sustainedWins,
+            rows,
+          }),
+        ),
+      },
+      null,
+      2,
+    ) + '\n',
+  );
 
   console.log(
     `\nmedian per call, drivers alternated within every pair, order swapped each pair`,
   );
   console.log(
-    `node ${process.version}, postgrejs ${(await import('postgrejs/package.json', { with: { type: 'json' } })).default.version}, pg ${(await import('pg/package.json', { with: { type: 'json' } })).default.version}\n`,
+    `node ${versions.node}, postgrejs ${versions.postgrejs}, pg ${versions.pg}\n`,
   );
-  for (const { scenario, rows, pairs, wins, p } of results) {
+  for (const {
+    scenario,
+    rows,
+    pairs,
+    wins,
+    p,
+    heapPairs,
+    heapWins,
+    heapP,
+  } of results) {
     console.log(
       `${scenario.name} - ${scenario.note} (${scenario.iters} calls per timed unit, ${pairs} pairs)`,
     );
@@ -269,11 +389,20 @@ async function main() {
         `  ${r.name.padEnd(15)} ${r.ms.toFixed(3).padStart(9)} ms/op  ` +
           `${(slowest / r.ms).toFixed(2)}x  ` +
           `spread ${r.lo.toFixed(3)}-${r.hi.toFixed(3)}  ` +
-          `peak heap ${r.peakKb.toFixed(0).padStart(7)} KB`,
+          `${r.allocPerCallKb.toFixed(1).padStart(6)} KB/call ` +
+          `(${r.allocLoKb.toFixed(1)}-${r.allocHiKb.toFixed(1)}), ` +
+          `holds ${(r.heldKb / 1024).toFixed(1)} MB, ` +
+          `wire ${r.wireKb.toFixed(1)} in / ${r.wireOutKb.toFixed(1)} out KB`,
       );
-    console.log(`  -> this driver won ${wins} of ${pairs} pairs, ${odds(p)}`);
+    console.log(`  -> postgrejs won ${wins} of ${pairs} pairs, ${odds(p)}`);
+    console.log(
+      `     allocation: postgrejs lower in ${heapWins} of ${heapPairs}, ${odds(heapP)}`,
+    );
     console.log();
   }
+  console.log(
+    'written to benchmark/results/latest.json - `npm run bench:report` renders it\n',
+  );
 }
 
 await main();

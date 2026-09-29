@@ -101,7 +101,9 @@ second off if you know your schema does not need it.
 ## Multi-statement `db.execute()`
 
 Works, and nearly did not. `pg` accepts several statements in one call because a parameterless query
-goes over PostgreSQL's simple protocol; PostgreJS's `query()` is always the extended one, which takes
-a single statement. The driver retries through PostgreJS's `execute()` when the server says so, which
-is safe because the server says so while parsing, before any of the statements has run. The result is
-a bare array, one entry per statement, as `pg` returns it.
+goes over PostgreSQL's simple protocol - which is a guess from whether parameters happen to be
+present. PostgreJS's `query()` is always the extended one and its `execute()` is the counterpart, so
+the driver asks which is needed with the client's `isMultiStatement()` and sends the right one first
+time. The 42601 fallback stays behind that answer, and is safe for the same reason it always was: the
+server raises it while parsing, before any of the statements has run. The result is a bare array, one
+entry per statement, as `pg` returns it.

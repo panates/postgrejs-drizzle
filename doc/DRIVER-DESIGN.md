@@ -6,7 +6,7 @@ server rather than read out of documentation; a claim that says "verified" has a
 and the tests under `test/` hold most of them to it.
 
 Measured against `drizzle-orm` 0.45.3 (npm `latest`) and `drizzle-orm@rc` 1.0.0-rc.4, PostgreJS
-3.10.1, and PostgreSQL 14.24 and 18.4. The recon round that opened this document ran on 0.45.2 and
+3.11.0, and PostgreSQL 14.24 and 18.4. The recon round that opened this document ran on 0.45.2 and
 PostgreJS 3.6.1, and where a number below names those, that is the run it came from. Line references
 are into the `drizzle-orm` git tree at tag `0.45.2`, path prefix `drizzle-orm/src/` - 0.45.3 changed
 nothing under `pg-core`.
@@ -170,9 +170,31 @@ dialect settled on - verified again here, one value per JS type:
 | plain object | ok | **fails** - `invalid input syntax for type json` |
 
 **Settled, not a decision:** wrap `string | number | boolean | bigint | null | undefined` in
-`new BindParam(0, v)`; leave `Date`, `Buffer`, arrays and objects to PostgreJS's typed binary
-encoders. Drizzle's encoders mean the first group covers nearly every parameter in practice; the
+`new BindParam(0, v)`; leave `Date`, `Buffer`, arrays and objects unwrapped, so PostgreJS types
+them itself. Drizzle's encoders mean the first group covers nearly every parameter in practice; the
 second group only shows up through `sql` templates and custom types.
+
+**What that means on the wire: outgoing parameters are text, on both drivers.** Declaring OID 0 is
+declaring no type, so there is nothing for PostgreJS to pick a binary encoder from, and the second
+group is not the exception it sounds like. Measured by reading the format codes out of the Bind
+message - `1` is binary, `0` is text - one parameter per JS type through this driver:
+
+| parameter | `pg` | this driver |
+| --- | --- | --- |
+| string, number, bigint, `Date` | text | text |
+| `int4[]`, `text[]` | text | text |
+| plain object (`jsonb`) | text | **binary** |
+| `Buffer` (`bytea`) | binary | binary |
+
+Arrays are text by PostgreJS's own decision rather than by OID 0's: it stopped declaring an element
+type for an array of numbers because `[1, 2]` is one of six array types depending on where it lands
+and they have no casts between them. `jsonb` is the one row that differs, and its binary form is
+the same JSON text behind a one-byte version marker, so it is not a saving either.
+
+**Binary is therefore a read-side property of this driver, not a write-side one.** The server
+chooses the format of a result column because PostgreJS asks for binary results; nothing asks for
+binary parameters. `doc/BENCHMARKS.md` is the measurement, and it falls the way this predicts: the
+payload wins are all reads, and every write sends byte-for-byte what `pg` sends or close to it.
 
 ## 5. Transactions and savepoints
 
@@ -239,9 +261,12 @@ the upstream suite never reads `.command` and never deep-compares a `db.execute`
 **Multi-statement `db.execute` needs PostgreJS's `execute()`.** `db.execute()` with two statements in one template works on
 `pg` because a parameterless query goes over the simple protocol; PostgreJS's `query()` is always the
 extended protocol and answers `42601 cannot insert multiple commands into a prepared statement`.
-`connection.execute()` is the counterpart, and three things make routing to it cheap and safe:
-`42601` is raised at Parse, before anything runs (verified - the table was still empty after the
-failed call), so falling back on that code needs no SQL parsing and cannot double a side effect;
+`connection.execute()` is the counterpart, and since 3.11.0 `isMultiStatement()` answers which of
+the two a given string needs, so the choice is made before anything is sent - a scanner over the
+quoting rules a `;` can hide inside, rather than `pg`'s guess from whether parameters are present.
+Three things make routing cheap and safe: `42601` is raised at Parse, before anything runs (verified
+- the table was still empty after the failed call), so the fallback that still sits behind the
+scanner needs no SQL parsing and cannot double a side effect;
 `execute()` honours `fetchAsString` and `unknownTypesAsString`, so §8's value shapes are unchanged
 (verified, identical values on both paths); and it takes no parameters (`42P02`), so the fallback
 only applies when `params.length === 0` - which is the only case that can carry several statements
@@ -459,8 +484,11 @@ rather than reshaped, and a caller who wants the exact decimal wants PostgreJS's
 rather than a double. All of them are pinned by tests in `test/B-live/types.spec.ts`, so the choice
 stays a decision.
 
-**Verified on the peer floor.** All 199 tests pass on PostgreJS 3.10.1, which is what the peer range
-starts at, and drizzle's own suite scores 183 of 183 there - the same as the `node-postgres` control.
+**Verified on the peer floor and on the current release.** All 228 tests pass on PostgreJS 3.11.0,
+which is what the peer range starts at, and on 3.12.1, which is what it resolves to; drizzle's own
+suite scores 183 of 183 on both - the same as the `node-postgres` control. The floor is re-run
+rather than assumed, because 3.12.0 tightened the binary integer encoders and changed how a
+`BindParam` reaching a prepared statement is handled, and a driver that used either would move.
 
 `point` is the one addition and the one that is easy to miss: PostgreJS decodes it into a `Point`
 class instance, and drizzle's `point` column in `xy` mode returns the driver value **unchanged**

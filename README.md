@@ -7,9 +7,22 @@
 
 A [Drizzle ORM](https://orm.drizzle.team) driver for
 [PostgreJS](https://github.com/panates/postgrejs). Put it where `drizzle-orm/node-postgres` goes and
-everything above it stays the same - your schema, your queries, your migrations. Large columns come
-back two to three times faster on a fraction of the heap, and the client underneath can do things
-drizzle has no way to ask for.
+everything above it stays the same - your schema, your queries, your migrations.
+
+<!-- bench:intro -->
+
+It is faster where it counts, and it holds far less memory doing it. A 4MB `bytea` comes back in
+13.6 ms against 30.4 ms, and at 4.5 MB against 51.7 MB - `pg` holds that column as hex text, twice
+the size, off the JS heap where a heap figure alone cannot see it. A 100k-element `int4[]` runs
+3.9x, at 2.3 MB against 33.6 MB - values that use the whole type on purpose, because a column of
+single digits is shorter as text than as binary and quoting that would be choosing the answer.
+Ordinary queries gain less and gain it repeatably: a point read is the faster of the two in 100 of
+101 alternated pairs. All of it measured through drizzle against `drizzle-orm/node-postgres` on the
+same server: [`doc/BENCHMARKS.md`](doc/BENCHMARKS.md).
+
+<!-- /bench:intro -->
+
+And the client underneath can do things drizzle has no way to ask for.
 
 ## Install
 
@@ -17,8 +30,13 @@ drizzle has no way to ask for.
 npm install drizzle-postgrejs drizzle-orm postgrejs
 ```
 
-`drizzle-orm` (>=0.44.6 <0.46.0) and `postgrejs` (>=3.10.1 <4) are peer dependencies. Node >=22,
+`drizzle-orm` (>=0.44.6 <0.46.0) and `postgrejs` (>=3.11.0 <4) are peer dependencies. Node >=22,
 PostgreSQL 14 or later - 14 and 18 are what CI runs.
+
+The 0.45 line is what this targets. Drizzle's own 1.0 rewrites the driver seam - `PgPreparedQuery`
+becomes `PgBasePreparedQuery`, row mode moves from a flag to a method, type handling becomes a
+per-driver codec table - so a 1.0 driver will be a rewrite rather than an adaptation;
+[`doc/DRIVER-DESIGN.md`](doc/DRIVER-DESIGN.md) §10 has the detail.
 
 ## Quick start
 
@@ -111,9 +129,14 @@ and has no seam a third-party driver can enter. So they need their own `dbCreden
 It is a drop-in swap for `drizzle-orm/node-postgres`: the same `drizzle(client)` call, the same
 schema, the same queries, the same migrations. What you get for it:
 
-- **Faster where the payload is large** - 2.2x on a 100k-element array column and 3.2x on a 4MB
-  `bytea`, on a fraction of the heap, because the values arrive in PostgreSQL's binary format rather
-  than as text to be parsed.
+<!-- bench:payload -->
+
+- **Faster where the payload is large** - 2.2x on a 4MB `bytea`, and 3.9x on a 100k-element
+  `int4[]` whose values use the whole type, on a fraction of the memory, because the values arrive
+  in PostgreSQL's binary format rather than as text to be parsed.
+
+<!-- /bench:payload -->
+
 - **Slightly faster on ordinary round trips**, repeatably - statements are prepared and reused
   without anyone asking for it.
 - **A client that can do what drizzle has no way to ask for** - cursors, `COPY`, `LISTEN`/`NOTIFY`,
@@ -121,17 +144,30 @@ schema, the same queries, the same migrations. What you get for it:
 - **Checked against drizzle's own integration suite** - 183 of its tests pass, with
   `drizzle-orm/node-postgres` run over the same server in the same invocation as the control.
 
-| Workload                                  | node-postgres | drizzle-postgrejs | speedup   |
-| ----------------------------------------- | ------------- | ----------------- | --------- |
-| point read - one row by primary key       | 0.521 ms      | 0.466 ms          | **1.12x** |
-| insert returning - six parameters         | 0.559 ms      | 0.535 ms          | **1.04x** |
-| page of 200 - nine columns, mixed types   | 1.092 ms      | 1.110 ms          | level     |
-| concurrent reads - 20 at once, pool of 10 | 2.737 ms      | 2.459 ms          | level     |
-| `int4[]` of 100k - one array column       | 28.526 ms     | 13.223 ms         | **2.16x** |
-| `bytea` of 4MB - one binary column        | 111.767 ms    | 35.113 ms         | **3.18x** |
+<!-- bench:headline -->
 
-drizzle-orm 0.45.3, PostgreSQL on loopback, Node 24. Medians; how that was measured and how much
-each row can bear are in [How the numbers were measured](#how-the-numbers-were-measured).
+| Scenario                                                                                               | node-postgres<br>allocated per call | postgrejs<br>allocated per call  |                       |
+| ------------------------------------------------------------------------------------------------------ | ----------------------------------- | -------------------------------- | --------------------- |
+| point read - 1 row of 9 columns                                                                        | 0.283 ms<br>**28 KB**/call          | **0.248 ms**<br>31 KB/call       | **1.14x**<br>+11%     |
+| page of 200 - 200 rows of 9 columns, mixed types                                                       | 0.721 ms<br>398 KB/call             | **0.632 ms**<br>**298 KB**/call  | **1.14x**<br>**-25%** |
+| concurrent reads - 20 reads at once of 1 row each, pool of 10                                          | 1.105 ms<br>**472 KB**/call         | **1.013 ms**<br>543 KB/call      | **1.09x**<br>+15%     |
+| int4[] of 100k, full width - 1 row holding 1 array of 100 000 values that use the whole type           | 22.135 ms<br>33.6 MB/call           | **5.616 ms**<br>**2.3 MB**/call  | **3.94x**<br>**-93%** |
+| float8 of 5k rows, full width - 5000 rows of 1 value, eight bytes against seventeen significant digits | 1.104 ms<br>**1.4 MB**/call         | **0.728 ms**<br>1.5 MB/call      | **1.52x**<br>+1%      |
+| float8[] of 5k in one row - 1 row holding 1 array of the same 5000 values                              | 2.231 ms<br>2.8 MB/call             | **0.579 ms**<br>**232 KB**/call  | **3.85x**<br>**-92%** |
+| uuid of 5k rows - 5000 rows of 1 value, sixteen bytes against thirty-six characters                    | 1.202 ms<br>**1.5 MB**/call         | **0.875 ms**<br>1.6 MB/call      | **1.37x**<br>+3%      |
+| box of 5k rows - 5000 rows of 1 value, four float8s against coordinates that use them                  | 2.006 ms<br>2.0 MB/call             | **1.036 ms**<br>2.0 MB/call      | **1.94x**<br>level    |
+| bytea of 4MB - 1 row holding 1 value of 4 MB                                                           | 30.371 ms<br>51.7 MB/call           | **13.625 ms**<br>**4.5 MB**/call | **2.23x**<br>**-91%** |
+| insert one row - 1 row, six parameters                                                                 | 0.308 ms<br>**28 KB**/call          | **0.272 ms**<br>35 KB/call       | **1.13x**<br>+23%     |
+| insert 500 rows - 500 rows in 1 statement, 2500 parameters that fill their types                       | 4.605 ms<br>**3.7 MB**/call         | **4.370 ms**<br>4.0 MB/call      | **1.05x**<br>+7%      |
+| insert a 4MB bytea - 1 row holding 1 value of 4 MB, binary on both sides                               | 14.267 ms<br>5.2 MB/call            | **13.873 ms**<br>**4.0 MB**/call | **1.03x**<br>**-22%** |
+| insert a 100k int4[] - 1 row holding 1 array of 100 000 values, text on both sides - see below         | 16.765 ms<br>27.3 MB/call           | **12.800 ms**<br>**1.8 MB**/call | **1.31x**<br>**-93%** |
+| twenty inserts in a transaction - 20 rows, one statement each, inside one transaction                  | 5.997 ms<br>**370 KB**/call         | **5.203 ms**<br>470 KB/call      | **1.15x**<br>+27%     |
+
+`drizzle-orm` 0.45.3, `postgrejs` 3.12.1, PostgreSQL on loopback, Node 24.15.0. Medians; how that
+was measured and how much each row can bear are in [How the numbers were
+measured](#how-the-numbers-were-measured).
+
+<!-- /bench:headline -->
 
 **The gain follows the payload, not the query.** An ordinary read or write gains a little and gains
 it consistently; a column that carries bulk - an array, a `bytea`, anything large in a raw
@@ -148,14 +184,26 @@ The medians alone would not be worth much: this is a shared machine, and the abs
 the same `node-postgres` point read came out at 0.270 ms and 0.521 ms in two runs an hour apart. What
 does not drift is *which* of the two won each pair, so that is counted separately:
 
-| Workload                                  | pairs | drizzle-postgrejs faster in | odds of that by luck |
-| ----------------------------------------- | ----- | --------------------------- | -------------------- |
-| point read - one row by primary key       | 101   | 75                          | < 1 in 10^5          |
-| insert returning - six parameters         | 101   | 68                          | < 1 in 10^3          |
-| page of 200 - nine columns, mixed types   | 101   | 49                          | not distinguishable  |
-| concurrent reads - 20 at once, pool of 10 | 61    | 31                          | not distinguishable  |
-| `int4[]` of 100k - one array column       | 41    | 41                          | < 1 in 10^12         |
-| `bytea` of 4MB - one binary column        | 41    | 41                          | < 1 in 10^12         |
+<!-- bench:signtest -->
+
+| Scenario                        | pairs | postgrejs faster in | odds of that by luck |
+| ------------------------------- | ----- | ------------------- | -------------------- |
+| point read                      | 101   | 100                 | < 1 in 10^28         |
+| page of 200                     | 101   | 81                  | < 1 in 10^9          |
+| concurrent reads                | 61    | 52                  | < 1 in 10^7          |
+| int4[] of 100k, full width      | 41    | 41                  | < 1 in 10^12         |
+| float8 of 5k rows, full width   | 61    | 61                  | < 1 in 10^18         |
+| float8[] of 5k in one row       | 61    | 61                  | < 1 in 10^18         |
+| uuid of 5k rows                 | 61    | 61                  | < 1 in 10^18         |
+| box of 5k rows                  | 61    | 61                  | < 1 in 10^18         |
+| bytea of 4MB                    | 41    | 41                  | < 1 in 10^12         |
+| insert one row                  | 101   | 100                 | < 1 in 10^28         |
+| insert 500 rows                 | 61    | 43                  | p = 0.002            |
+| insert a 4MB bytea              | 41    | 29                  | p = 0.012            |
+| insert a 100k int4[]            | 41    | 41                  | < 1 in 10^12         |
+| twenty inserts in a transaction | 61    | 61                  | < 1 in 10^18         |
+
+<!-- /bench:signtest -->
 
 That is a sign test - only which driver won counts, and by how much is thrown away, which is exactly
 what makes it survive a noisy machine. Two drivers of equal speed would split the pairs evenly, so
@@ -163,19 +211,27 @@ the last column is the probability of seeing a split that lopsided from a fair c
 differences are real; it says nothing about their size, which is what the speedup column is for. Two
 rows say "not distinguishable" and are printed that way rather than rounded into a win.
 
+<!-- bench:binary -->
+
 Result columns arrive in PostgreSQL's binary format and are decoded per type, where `pg` asks for
-text and parses it. On bulk that is the whole difference: a 100k-element `int4[]` costs 13.2 ms and
-1.7 MB of heap here against 28.5 ms and 65.2 MB, because the text path has to materialise the array
-literal as one string before it can parse it.
+text and parses it. On bulk that is the whole difference: a 100k-element `int4[]` costs 5.6 ms and
+2.3 MB here against 22.1 ms and 33.6 MB, because the text path has to materialise the array literal
+as one string before it can parse it.
+
+<!-- /bench:binary -->
 
 It is also cheaper on the wire. A `bytea` in text is `\x`-prefixed hex, two characters per byte, so
 the 4MB column costs 8MB of network under `pg` and 4MB here.
+
+<!-- bench:prepared -->
 
 PostgreJS names and caches a statement per connection - 64 by default, least-recently-used closed -
 so each distinct SQL string is parsed and planned once rather than on every call. Counted from the
 backend: three queries through this driver leave one prepared statement behind, and the same three
 through `drizzle-orm/node-postgres` leave none, because `pg` prepares only a query it was given a
-name for and drizzle does not give it one. This is what the point read's 75 pairs of 101 is.
+name for and drizzle does not give it one. This is what the point read's 100 pairs of 101 is.
+
+<!-- /bench:prepared -->
 
 Drizzle's own `.prepare(name)` still works as it always did - it is no longer the only way to get a
 statement prepared.
@@ -218,7 +274,7 @@ Run it yourself with `scripts/run-drizzle-suite.sh`. It needs a server; without
 `PG_CONNECTION_STRING` it starts a `postgres:14` container on a free port and removes it afterwards.
 A weekly CI job runs the matrix of both drizzle versions against PostgreSQL 14 and 18.
 
-On top of that, 203 tests of this package's own - and a differential suite among them that runs every
+On top of that, 212 tests of this package's own - and a differential suite among them that runs every
 case through `drizzle-orm/node-postgres` as well and compares the two.
 
 ## What changes when you switch
@@ -269,10 +325,17 @@ does not hold.
 
 ### Several statements in one `db.execute()`
 
-It works here too, and it is worth knowing how: `pg` takes several statements in one call because a
-parameterless query goes over the simple protocol. This driver reaches the same place through
-PostgreJS's `execute()`, and switches to it on the server's own word - which the server gives while
-parsing, before any statement has run, so the retry costs nothing and risks nothing.
+It works here too, and it is worth knowing how. `pg` takes several statements in one call because a
+parameterless query goes over the simple protocol - it picks the protocol from whether the call
+happened to carry parameters. PostgreJS's `query()` is always the extended one, and its `execute()`
+is the counterpart, so the driver has to choose; it asks the client with `isMultiStatement()`, a
+scanner over everything a `;` can hide inside - string and dollar-quoted literals, quoted
+identifiers, both comment forms - and sends the right one first time.
+
+A multi-statement call still gets the server's own error when it carries parameters, since a simple
+query has nowhere to put them. And if the scanner is ever wrong the other way, the 42601 fallback is
+still behind it: the server raises that while parsing, before any statement has run, so the retry
+costs nothing and risks nothing.
 
 ### `connectionString`
 
@@ -303,18 +366,6 @@ The tests come in three kinds, and the split is deliberate:
 - `test/C-differential` - the same drizzle calls through this driver and through
   `drizzle-orm/node-postgres`, deep-compared. It is what catches a difference nobody thought to
   assert.
-
-## Status
-
-Complete. Selects, inserts, updates, deletes, RETURNING, relational queries, joins, transactions,
-savepoints, prepared statements, migrations and `db.execute()` all work against a live server, and
-drizzle's own suite passes in full on the PostgreSQL version it is written for, with nothing
-skipped.
-
-Drizzle itself is pre-1.0 and its 1.0 line rewrites the driver seam - `PgPreparedQuery` becomes
-`PgBasePreparedQuery`, row mode moves from a flag to a method, and type handling becomes a per-driver
-codec table. This package targets the 0.45 line; a 1.0 driver will be a rewrite rather than an
-adaptation. [`doc/DRIVER-DESIGN.md`](doc/DRIVER-DESIGN.md) §10 has the detail.
 
 ## License
 

@@ -91,12 +91,12 @@ describe('prepared query', () => {
 
   describe('multi-statement db.execute()', () => {
     /**
-     * `query()` is the extended protocol, which takes one statement. The
-     * server says so while parsing, before anything has run, so retrying
-     * through `execute()` repeats no side effect.
+     * `query()` is the extended protocol, which takes one statement.
+     * PostgreJS answers which of the two a string needs, so the choice is
+     * made before anything is sent - one round trip rather than a refused
+     * one and then a retry.
      */
-    it('falls back to execute() on 42601 and answers like pg, with an array', async () => {
-      client.queryResult = databaseError(MULTIPLE_COMMANDS_ERROR_CODE);
+    it('routes straight to execute(), without asking query() first', async () => {
       client.scriptResult = {
         totalCommands: 2,
         results: [
@@ -112,19 +112,53 @@ describe('prepared query', () => {
         'INSERT',
         'SELECT',
       ]);
+      expect(client.calls.map(call => call.method)).toStrictEqual(['execute']);
+    });
+
+    it('carries the same options into execute()', async () => {
+      await fakeDb(client).execute(sql`select 1; select 2`);
+      const options = client.calls[0]!.options as Record<string, any>;
+      expect(options.rollbackOnError).toBe(false);
+      expect(options.unknownTypesAsString).toBe(true);
+      expect(options.objectRows).toBe(true);
+    });
+
+    /**
+     * A `;` inside a literal, an identifier, a dollar-quoted body or a
+     * comment is not a second statement, and a query that lost its
+     * prepared plan to a scanner that thought otherwise would be a silent
+     * cost. Each of these has to stay on `query()`.
+     */
+    const singles: [string, string][] = [
+      ['a string literal', `select 'a; b' as v`],
+      ['a quoted identifier', `select 1 as "a; b"`],
+      ['a dollar-quoted body', `select $tag$a; b$tag$ as v`],
+      ['a line comment', `select 1 -- a; b`],
+      ['a block comment', `select 1 /* a; b */`],
+      ['a trailing semicolon', `select 1;`],
+    ];
+
+    for (const [what, statement] of singles) {
+      it(`keeps a single statement with ${what} on query()`, async () => {
+        await fakeDb(client).execute(sql.raw(statement));
+        expect(client.calls.map(call => call.method)).toStrictEqual(['query']);
+      });
+    }
+
+    /**
+     * The scanner reads `\'` as an escape, which it is not under
+     * `standard_conforming_strings = off`, so the server can still answer
+     * 42601 where this side saw one statement. It raises that while
+     * parsing, before anything has run, so the retry repeats no side
+     * effect.
+     */
+    it('still falls back to execute() when the server answers 42601', async () => {
+      client.queryResult = databaseError(MULTIPLE_COMMANDS_ERROR_CODE);
+      await fakeDb(client).execute(sql`select 1`);
       expect(client.calls.map(call => call.method)).toStrictEqual([
         'query',
         'execute',
       ]);
-    });
-
-    it('carries the same options into the fallback', async () => {
-      client.queryResult = databaseError(MULTIPLE_COMMANDS_ERROR_CODE);
-      await fakeDb(client).execute(sql`select 1; select 2`);
-      const options = client.calls[1]!.options as Record<string, any>;
-      expect(options.rollbackOnError).toBe(false);
-      expect(options.unknownTypesAsString).toBe(true);
-      expect(options.objectRows).toBe(true);
     });
 
     it('does not retry when there are parameters - execute() takes none', async () => {
@@ -132,6 +166,18 @@ describe('prepared query', () => {
       await expect(fakeDb(client).execute(sql`select ${1}`)).rejects.toThrow(
         DrizzleQueryError,
       );
+      expect(client.calls.map(call => call.method)).toStrictEqual(['query']);
+    });
+
+    /**
+     * Several statements *with* parameters cannot work either way, so the
+     * server's own error is the better one to surface.
+     */
+    it('lets the server answer a multi-statement call that has parameters', async () => {
+      client.queryResult = databaseError(MULTIPLE_COMMANDS_ERROR_CODE);
+      await expect(
+        fakeDb(client).execute(sql`select ${1}; select 2`),
+      ).rejects.toThrow(DrizzleQueryError);
       expect(client.calls.map(call => call.method)).toStrictEqual(['query']);
     });
 

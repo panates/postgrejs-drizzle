@@ -19,10 +19,17 @@ import { BindParam } from 'postgrejs';
  * `pg` sends and what lets the server resolve the type from context.
  *
  * Only for values whose text form the server can parse out of context.
- * A `Date`, a `Buffer`, a JS array or a plain object keeps PostgreJS's own
- * typed binary encoder - wrapping those breaks them, verified:
+ * A `Date`, a `Buffer`, a JS array or a plain object is left unwrapped for
+ * PostgreJS to type itself - wrapping those breaks them, verified:
  * `invalid input syntax for type timestamp: "Tue Mar 05 2024 ..."`,
  * `malformed array literal: "1,2"`, `invalid input syntax for type json`.
+ *
+ * Unwrapped is not the same as binary, and it is worth being exact about
+ * because the benchmark numbers turn on it. Read out of the Bind message,
+ * every parameter this driver sends is text except a `Buffer`, which both
+ * clients send as binary anyway, and a plain object, whose `jsonb` binary
+ * form is the same JSON behind a version byte. Binary is what PostgreJS
+ * asks for on the way *back*; it is not what this driver sends.
  */
 export function bindParam(value: unknown): unknown {
   if (value === null || value === undefined) return new BindParam(0, value);

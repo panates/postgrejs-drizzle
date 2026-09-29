@@ -35,11 +35,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # `@v2`, and `install: 'ci'` because the suite script drives npm. `@v1` deleted
+      # package-lock.json before installing, so a weekly run meant to notice a change in drizzle-orm
+      # was also silently changing every other dependency under it - which is the opposite of what a
+      # canary is for. `token` is gone: no dependency here carries a private scope.
       - name: Setup Environment
-        uses: panates/gh-setup-node@v1
+        uses: panates/gh-setup-node@v2
         with:
           node-version: '22'
-          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          install: 'ci'
 
       - name: Run drizzle-orm's own PostgreSQL suite against this driver
         run: scripts/run-drizzle-suite.sh
