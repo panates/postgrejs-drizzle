@@ -1,6 +1,64 @@
 # Changelog
 
-<!-- rman:documented-up-to 700f3ccbf8a2558c97a62a9360b6e75d674f8f21 -->
+<!-- rman:documented-up-to f2b447303621341c9aae6a7222b26f56f5b05e13 -->
+
+## v1.1.0 (2026-09-29)
+
+### ✨ Features
+
+- choose the protocol before sending, not after being refused (ef1383f)
+
+### 🐛 Bug Fixes
+
+- measure memory in a process of its own, and count what is off the heap (250cf11)
+- separate what a driver holds from what a call throws away (58276b3)
+- **bench:** let the int4[] values be a dimension, not a choice (f6c0cf5)
+
+### 📚 Documentation
+
+- name 3.11.0, which is what the floor and the verification are now (38e7f30)
+- drop the Status section (c807344)
+- re-measure on postgrejs 3.11.0 (5f4b216)
+- say where this benchmark and postgrejs's own differ (2c1cf5f)
+- the accounting difference is closed (4ee3a7a)
+- say why memory gets a process each and the timings do not (edb20ab)
+
+### 📦 Build System
+
+- generate the benchmark report instead of copying it across (f0aa0db)
+- move to rman, github-actions@v3 and the shared preset (440a5ba)
+- run `rman build` in the drizzle suite script, because `npm run build` is gone (189b4c2)
+
+### 💬 General Changes
+
+- three bytea sizes, so the payload advantage has a shape (462f099)
+- drop the numeric scenarios (8b465e0)
+- read every scenario's data from a table, and let the report say pg won (011a38c)
+- re-measure on the uuid decode fix, which turns that row over (7170951)
+- fold peak memory into each driver's cell (0431429)
+- show the memory difference as a percentage, not a multiple (7ca37f2)
+- disclose that pg and postgrejs are not always on the same protocol (0a0660c)
+- bind a parameter everywhere, so both drivers speak the extended protocol (1d2b4a8)
+- one size per type, grouped into reading and writing, with writes (2a46195)
+- count what goes out, widen the write values, and say who wins each write (6292ad1)
+- re-measure on the array-literal fix, which turns that write over (62101ae)
+- make peak memory what one call needs, not what a batch leaves behind (d06aae3)
+- say what the peak is, and report what each client keeps (7ee0aaa)
+- the large writes hold a buffer, and it comes back (66219c8)
+- say what the driver actually sends: text, not binary (c13b7dc)
+- measure what a run needs, not just what a call adds (8a0a92e)
+- move to postgrejs 3.12.0 and re-measure on it (b6ac46c)
+- count the garbage, and say where counting it stops working (58b0ff2)
+- say that the high-water is partly about the process around us (f57acfe)
+- read the peak at the end of the call instead of hoping to sample it (ec40cb2)
+- measure what a call allocates, because a per-call peak cannot be (8687195)
+- say that the memory number is a rate, and what one call is (a085bb0)
+- hold the same 5000 float8s in two shapes, and say each scenario's shape (a3b0e92)
+- cut the method and reading sections, and group their rows by memory (5d97a36)
+- re-run on postgrejs 3.12.1, which carries both fixes reported from here (6bd2b9b)
+- the peer range resolves to 3.12.1 now, and both suites were re-run on it (2e9736e)
+
+---
 
 ## v1.0.4 (2026-09-23)
 
