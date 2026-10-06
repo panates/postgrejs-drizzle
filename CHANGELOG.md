@@ -1,6 +1,19 @@
 # Changelog
 
-<!-- rman:documented-up-to f2b447303621341c9aae6a7222b26f56f5b05e13 -->
+<!-- rman:documented-up-to 224891434952e9fa8e131e5e933c9fb44eb1d907 -->
+
+## v1.1.1 (2026-10-06)
+
+### 🧹 Chores
+
+- sync lockfile (b57ebcc)
+- raise the dev dependencies, and drop `.ncurc.yml` (23af37a)
+
+### 💬 General Changes
+
+- turn off `asyncErrorHandling`, which `pg` has no counterpart for (016bd5f)
+
+---
 
 ## v1.1.0 (2026-09-29)
 
