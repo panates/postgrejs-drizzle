@@ -367,6 +367,13 @@ medians are what the tables print; the sign test beside them counts only **which
 pair, which is what survives a shared machine - the same \`pg\` point read has come out at 0.270 ms,
 0.521 ms and 0.508 ms across three runs of the same code, while the winner did not change.`)}
 
+${wrap(`**PostgreJS runs with \`asyncErrorHandling\` off here.** On by default, it makes a thrown
+error's stack point at the code that called \`query()\` rather than at an internal frame, and
+capturing that costs CPU. \`pg\` offers nothing like it, so leaving it on would bill PostgreJS for a
+feature the other side does not have. Its own documentation says as much where the option is
+declared. Nothing else is turned off: \`timing\` is already off by default, and the
+\`rollbackOnError: false\` this driver always sends is there for correctness, not for the clock.`)}
+
 ${wrap(`**Two numbers per row.** The time is one call. The memory is what one call **asks for** -
 everything allocated while it runs, whether or not any of it survives - measured in a process of its
 own per driver, so a client's own buffers are inside the window rather than under it. A call is one
