@@ -62,7 +62,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/panates/postgrejs-drizzle.git"
+    "url": "git+https://github.com/panates/postgrejs-drizzle.git"
   },
   "keywords": [
     "drizzle",
