@@ -1,6 +1,20 @@
 # Changelog
 
-<!-- rman:documented-up-to 224891434952e9fa8e131e5e933c9fb44eb1d907 -->
+<!-- rman:documented-up-to c2aca5d5fef88ebf01e61d8d45b98aa61c37cb5d -->
+
+## v1.1.2 (2026-11-15)
+
+### 📚 Documentation
+
+- point the benchmark link at postgrejs's docs/ folder (aaab67b)
+
+### 🧹 Chores
+
+- sync lockfile (5db6df9)
+- normalize repository.url in package.json (f54a017)
+- **deps:** upgrade dependencies (2b979e7)
+
+---
 
 ## v1.1.1 (2026-10-06)
 
