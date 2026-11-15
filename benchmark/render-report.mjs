@@ -461,7 +461,7 @@ point read's margin is made of.
 
 The client underneath has its own benchmark against \`pg\` and \`postgres.js\`, on more scenarios than
 this - COPY, cursors, pooling, pipelining - in
-[\`postgrejs/doc/BENCHMARKS.md\`](https://github.com/panates/postgrejs/blob/master/doc/BENCHMARKS.md).
+[\`postgrejs/docs/BENCHMARKS.md\`](https://github.com/panates/postgrejs/blob/main/docs/BENCHMARKS.md).
 It measures the client; this measures the client through drizzle, so the two are not interchangeable
 and the numbers should not be read across. Where the method itself differs, and why:
 
