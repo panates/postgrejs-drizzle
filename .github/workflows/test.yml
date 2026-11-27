@@ -66,8 +66,10 @@ jobs:
           rman-version: '2'
           install: 'ci'
 
+      # pnpm has no `--no-save`, so this writes package.json and the lockfile. That is harmless in
+      # a throwaway checkout and it is what pins the matrix leg's drizzle-orm version.
       - name: Install the drizzle-orm version under test
-        run: npm install --no-save drizzle-orm@${{ matrix.drizzle }}
+        run: pnpm add -D drizzle-orm@${{ matrix.drizzle }}
 
       # **The preset's own commands, not npm scripts.** `lint` and `check` were root scripts; they
       # are commands `@panates/rman-preset` contributes now, so every repository extending it spells
@@ -84,10 +86,10 @@ jobs:
       # The preset contributes no typecheck command - it builds with `tsc -b` and this is the
       # no-emit half - so it stays an npm script.
       - name: Run type check
-        run: npm run typecheck
+        run: pnpm run typecheck
 
       - name: Run unit tests
-        run: npm run citest
+        run: pnpm run citest
         env:
           PGHOST: 127.0.0.1
           PGPORT: 5432
