@@ -193,7 +193,7 @@ the same JSON text behind a one-byte version marker, so it is not a saving eithe
 
 **Binary is therefore a read-side property of this driver, not a write-side one.** The server
 chooses the format of a result column because PostgreJS asks for binary results; nothing asks for
-binary parameters. `doc/BENCHMARKS.md` is the measurement, and it falls the way this predicts: the
+binary parameters. `docs/BENCHMARKS.md` is the measurement, and it falls the way this predicts: the
 payload wins are all reads, and every write sends byte-for-byte what `pg` sends or close to it.
 
 ## 5. Transactions and savepoints
@@ -401,7 +401,7 @@ baseline moves with the PostgreSQL version.
 ### The three PostgreJS defects this turned up - all since fixed
 
 All three were in PostgreJS, not in the driver, and all three affect `postgrejs-kysely` too. They
-were written up as tasks in `../postgrejs/.claude/` and fixed the same day; what follows is what was
+were written up as tasks in `../postgrejs/.claude/local/` and fixed the same day; what follows is what was
 wrong and how the fix was verified, because the *shape* of each problem still decides how this driver
 is written.
 

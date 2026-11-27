@@ -45,7 +45,29 @@ jobs:
           needs.source.outputs.head-ref != 'dev'
         )
       )
+    # Declared here because a reusable workflow's permissions are governed by the calling job.
+    permissions:
+      contents: read
     uses: ./.github/workflows/test.yml
+
+  # Sends the released code's coverage to Coveralls under main: the report test.yml kept as an
+  # artifact, either from dev's run of the merged commit or from this run's own test job. Keeping
+  # the upload out of the test run is what stops a number measured on a branch being published as
+  # the number for main.
+  coverage:
+    needs: [source, test]
+    if: >
+      always() && !cancelled() &&
+      needs.source.result == 'success' &&
+      (needs.test.result == 'success' ||
+       (needs.test.result == 'skipped' && needs.source.outputs.head-ref == 'dev'))
+    uses: panates/github-actions/.github/workflows/coverage-publish.yaml@v3
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    with:
+      pr-number: ${{ needs.source.outputs.head-ref == 'dev' && needs.source.outputs.pr-number || '' }}
 
   release:
     needs: [source, test]

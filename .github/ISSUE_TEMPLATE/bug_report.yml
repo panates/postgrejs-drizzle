@@ -1,0 +1,81 @@
+name: Bug report
+description: A query, transaction or value that comes back wrong through this driver
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A problem in the client underneath belongs in
+        [panates/postgrejs](https://github.com/panates/postgrejs/issues). If you are not sure which
+        side it is on, report it here and say so.
+
+  - type: textarea
+    id: what-happens
+    attributes:
+      label: What happens
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Smallest reproduction
+      description: >
+        The Drizzle schema, the query you run against it, and the result. A runnable snippet is
+        worth more than a description.
+      render: ts
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: node-postgres
+    attributes:
+      label: Does the same query behave differently through drizzle-orm/node-postgres?
+      options:
+        - label: I ran the same query through drizzle-orm/node-postgres and the result differs
+        - label: I did not try it
+
+  - type: input
+    id: version-driver
+    attributes:
+      label: drizzle-postgrejs version
+    validations:
+      required: true
+
+  - type: input
+    id: version-drizzle
+    attributes:
+      label: drizzle-orm version
+      description: The peer range is >=0.44.6 <0.46.0.
+    validations:
+      required: true
+
+  - type: input
+    id: version-postgrejs
+    attributes:
+      label: postgrejs version
+    validations:
+      required: true
+
+  - type: input
+    id: version-postgres
+    attributes:
+      label: PostgreSQL server version
+    validations:
+      required: true
+
+  - type: input
+    id: version-node
+    attributes:
+      label: Node.js version
+    validations:
+      required: true
+
+  - type: textarea
+    id: anything-else
+    attributes:
+      label: Anything else
+      description: >
+        Pooling in front of the server (PgBouncer and its mode), driver options you set, or the
+        PostgreSQL error code if there was one.
