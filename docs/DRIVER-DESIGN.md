@@ -193,7 +193,7 @@ the same JSON text behind a one-byte version marker, so it is not a saving eithe
 
 **Binary is therefore a read-side property of this driver, not a write-side one.** The server
 chooses the format of a result column because PostgreJS asks for binary results; nothing asks for
-binary parameters. `doc/BENCHMARKS.md` is the measurement, and it falls the way this predicts: the
+binary parameters. `docs/BENCHMARKS.md` is the measurement, and it falls the way this predicts: the
 payload wins are all reads, and every write sends byte-for-byte what `pg` sends or close to it.
 
 ## 5. Transactions and savepoints

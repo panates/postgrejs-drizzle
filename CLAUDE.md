@@ -4,7 +4,7 @@ A [Drizzle ORM](https://orm.drizzle.team) driver for
 [PostgreJS](https://github.com/panates/postgrejs), so a Drizzle schema can run on PostgreJS's
 wire-protocol client instead of `pg`.
 
-**Read `doc/DRIVER-DESIGN.md` before changing `src/`.** It is why the driver is shaped the way it
+**Read `docs/DRIVER-DESIGN.md` before changing `src/`.** It is why the driver is shaped the way it
 is - which of drizzle's contract is load-bearing, which of PostgreJS's defaults had to be overridden
 and what each override costs - with the measurement behind every claim. Most of what looks arbitrary
 in `src/` is answered there.
@@ -18,7 +18,7 @@ actually choose, which is the whole point of doing this.
 
 The trade, stated up front so nobody rediscovers it: Drizzle is pre-1.0 (0.45.x as of this writing)
 and its 1.0 line rewrites the driver seam, so this package targets 0.45 and a 1.0 driver will be a
-rewrite rather than an adaptation - `doc/DRIVER-DESIGN.md` §10 has the detail.
+rewrite rather than an adaptation - `docs/DRIVER-DESIGN.md` §10 has the detail.
 
 The fear that there would be no conformance suite turned out to be wrong: drizzle's own
 `integration-tests/tests/pg/pg-common.ts` is parameterised by driver, and
@@ -97,6 +97,9 @@ of Kysely, so they carry over - but re-check each one where Drizzle's expectatio
 ## Working conventions
 
 Inherited from `../postgrejs` and `../postgrejs-kysely`; they apply here from the first commit.
+
+- **A handoff note between sessions goes to `.claude/local/handoff.md`** (git-ignored); a new
+  session reads it first. There is one note, and a new handoff replaces it.
 
 - **No fixups here. A gap in PostgreJS is reported, not worked around.** When something this
   adapter needs is missing, wrong or slower in `postgrejs`, do not patch around it in this package:

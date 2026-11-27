@@ -201,7 +201,9 @@ cp -R "$REPO_DIR/build" "$DEST"
 # package's own files are replaced; its dependencies stay the ones npm just
 # installed beside it.
 rm -rf "$SUITE_DIR/node_modules/postgrejs"
-cp -R "$REPO_DIR/node_modules/postgrejs" "$SUITE_DIR/node_modules/postgrejs"
+# -L dereferences: under pnpm this repository's node_modules/postgrejs is a link into .pnpm, and a
+# plain `cp -R` would copy the link itself, leaving the suite with a dangling one.
+cp -RL "$REPO_DIR/node_modules/postgrejs" "$SUITE_DIR/node_modules/postgrejs"
 node -e '
   const { execFileSync } = require("node:child_process");
   const suite = process.argv[1];
