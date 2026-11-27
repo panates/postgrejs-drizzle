@@ -15,7 +15,7 @@ import {
  * so "PostgreJS is the binary one" is easy to carry over to parameters,
  * where it does not hold. This driver declares OID 0 for every scalar -
  * `params.ts` says why - and no declared type means no binary encoder to
- * choose, so what goes out is text on both drivers. `doc/DRIVER-DESIGN.md`
+ * choose, so what goes out is text on both drivers. `docs/DRIVER-DESIGN.md`
  * §4 states that as a claim; this is the claim.
  *
  * Differential rather than live: "we send text" is only interesting beside

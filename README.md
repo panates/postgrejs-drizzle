@@ -18,7 +18,7 @@ the size, off the JS heap where a heap figure alone cannot see it. A 100k-elemen
 single digits is shorter as text than as binary and quoting that would be choosing the answer.
 Ordinary queries gain less and gain it repeatably: a point read is the faster of the two in 100 of
 101 alternated pairs. All of it measured through drizzle against `drizzle-orm/node-postgres` on the
-same server: [`doc/BENCHMARKS.md`](doc/BENCHMARKS.md).
+same server: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 <!-- /bench:intro -->
 
@@ -36,7 +36,7 @@ PostgreSQL 14 or later - 14 and 18 are what CI runs.
 The 0.45 line is what this targets. Drizzle's own 1.0 rewrites the driver seam - `PgPreparedQuery`
 becomes `PgBasePreparedQuery`, row mode moves from a flag to a method, type handling becomes a
 per-driver codec table - so a 1.0 driver will be a rewrite rather than an adaptation;
-[`doc/DRIVER-DESIGN.md`](doc/DRIVER-DESIGN.md) §10 has the detail.
+[`docs/DRIVER-DESIGN.md`](docs/DRIVER-DESIGN.md) §10 has the detail.
 
 ## Quick start
 
@@ -104,7 +104,7 @@ are this driver's:
 
 The defaults are set so that every column reaches drizzle in the shape its own column mappers were
 written for, and so that PostgreSQL types each parameter from where it lands rather than from the
-JavaScript value's own shape. [`doc/DRIVER-DESIGN.md`](doc/DRIVER-DESIGN.md) takes each one in turn,
+JavaScript value's own shape. [`docs/DRIVER-DESIGN.md`](docs/DRIVER-DESIGN.md) takes each one in turn,
 with the measurement behind it.
 
 ### Migrations
@@ -246,7 +246,7 @@ PostgreJS can put several statements on one connection at a time. This driver do
 every query gets a connection to itself, exactly as under `pg` - and the concurrency row above is
 level because of that, not despite it. The headroom is real and unclaimed.
 
-Run it yourself with `npm run bench`; [`doc/BENCHMARKS.md`](doc/BENCHMARKS.md) has the peak-heap
+Run it yourself with `npm run bench`; [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) has the peak-heap
 figures and the rest of the method.
 
 ## Tested against drizzle's own suite
@@ -280,7 +280,7 @@ case through `drizzle-orm/node-postgres` as well and compares the two.
 ## What changes when you switch
 
 Measured against `drizzle-orm/node-postgres` on the same schema and the same server.
-[`doc/MIGRATING-FROM-NODE-POSTGRES.md`](doc/MIGRATING-FROM-NODE-POSTGRES.md) is the checklist.
+[`docs/MIGRATING-FROM-NODE-POSTGRES.md`](docs/MIGRATING-FROM-NODE-POSTGRES.md) is the checklist.
 
 ### Values
 

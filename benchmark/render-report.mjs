@@ -1,5 +1,5 @@
 /**
- * Renders the last `npm run bench` into `doc/BENCHMARKS.md` and into the
+ * Renders the last `npm run bench` into `docs/BENCHMARKS.md` and into the
  * two marked tables in `README.md`.
  *
  * The figures used to be copied across by hand, and the run that moved to
@@ -17,7 +17,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 
 const RESULTS = new URL('./results/latest.json', import.meta.url);
-const DOC = new URL('../doc/BENCHMARKS.md', import.meta.url);
+const DOC = new URL('../docs/BENCHMARKS.md', import.meta.url);
 const README = new URL('../README.md', import.meta.url);
 
 const CONTROL = 'node-postgres';
@@ -541,7 +541,7 @@ ${f.arrayControlHeap} - values that use the whole type on purpose, because a col
 is shorter as text than as binary and quoting that would be choosing the answer. Ordinary queries gain less and
 gain it repeatably: a point read is the faster of the two in ${f.pointWins} of ${f.pointPairs} alternated pairs.
 All of it measured through drizzle against \`drizzle-orm/node-postgres\` on the same server:
-[\`doc/BENCHMARKS.md\`](doc/BENCHMARKS.md).`),
+[\`docs/BENCHMARKS.md\`](docs/BENCHMARKS.md).`),
 );
 readme = replaceRegion(
   readme,
@@ -573,5 +573,5 @@ readme = replaceRegion(
 await writeFile(README, readme);
 
 console.log(
-  `doc/BENCHMARKS.md and README.md rendered from a run of ${results.measuredAt}`,
+  `docs/BENCHMARKS.md and README.md rendered from a run of ${results.measuredAt}`,
 );
