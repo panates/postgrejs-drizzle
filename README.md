@@ -246,7 +246,7 @@ PostgreJS can put several statements on one connection at a time. This driver do
 every query gets a connection to itself, exactly as under `pg` - and the concurrency row above is
 level because of that, not despite it. The headroom is real and unclaimed.
 
-Run it yourself with `npm run bench`; [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) has the peak-heap
+Run it yourself with `pnpm run bench`; [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) has the peak-heap
 figures and the rest of the method.
 
 ## Tested against drizzle's own suite
@@ -349,10 +349,11 @@ The unit tests need nothing; the live and differential ones need a PostgreSQL at
 `PGDATABASE` override.
 
 ```sh
-npm test          # unit, live and differential tests
-npm run citest    # the same, with coverage
-npm run qc        # lint and circular dependency check
-npm run compile   # type check without emitting
+pnpm test           # unit, live and differential tests
+pnpm run citest     # the same, with coverage
+pnpm run lint       # eslint
+pnpm run check      # circular dependency check
+pnpm run typecheck  # type check without emitting
 
 scripts/run-drizzle-suite.sh   # drizzle's own suite, on a database of its own
 ```
