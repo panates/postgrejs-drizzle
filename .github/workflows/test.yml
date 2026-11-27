@@ -7,10 +7,10 @@ on:
   # Can be run manually
   workflow_dispatch:
 
-  # on git push
+  # Every push but to main, which gets its tests from release.yml
   push:
-    branches:
-      - dev
+    branches-ignore:
+      - main
 
 # This workflow only ever reads the repository: it checks out, installs and
 # runs tests. Set explicitly rather than left to the repository default,
@@ -95,9 +95,12 @@ jobs:
           PGPASSWORD: postgres
           PGDATABASE: postgres
 
-      - name: Send coverage to Coveralls
-        uses: coverallsapp/github-action@v2
-        # Run only once
+      # release.yml sends this report to Coveralls under the release commit on main, so that a
+      # number published about the code on main was measured on the code on main. Uploaded from one
+      # matrix leg only: the artifact name has to be unique within the run.
+      - name: Keep the coverage report for the release
+        uses: actions/upload-artifact@v7
         if: ${{ matrix.node == '22' && matrix.postgres == '18' && matrix.drizzle == '0.45.4' }}
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          name: coverage
+          path: coverage/lcov.info
