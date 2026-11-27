@@ -1,6 +1,46 @@
 # Changelog
 
-<!-- rman:documented-up-to c2aca5d5fef88ebf01e61d8d45b98aa61c37cb5d -->
+<!-- rman:documented-up-to bf2b51c873fbf7deb483ca7792ee09e5877c32ab -->
+
+## v1.1.3 (2026-11-27)
+
+### 🐛 Bug Fixes
+
+- dereference the postgrejs link when overlaying it into the suite (1822903)
+
+### 📚 Documentation
+
+- point at the postgrejs notes where they now live (0d6a1bd)
+- add the code of conduct, the security policy and issue templates (87485b9)
+- rename doc/ to docs/ (effc9dc)
+- point the development commands at pnpm and the scripts that exist (f9a7a2b)
+
+### 📦 Build System
+
+- install and publish with pnpm instead of npm (3b4e236)
+
+### 🤖 Continuous Integration
+
+- publish coverage from the release and guard main's source branch (68c36fa)
+
+### 🧹 Chores
+
+- sync lockfile [skip ci] (b884f82)
+- bring the config files up to the repository standard (c7580b1)
+- mark the source manifest private and add the standard root scripts (48de723)
+- commit the shared Claude settings and name the handoff note (4fd0cb3)
+- drop renovate.json (11b3f32)
+- **deps:** align the declared ranges with the installed versions (61a01aa)
+
+### 🎨 Code Style
+
+- format eslint.config.mjs with the repository's prettier settings (ddc646c)
+
+### 💬 General Changes
+
+- Merge branch 'dev' into chore/standards (e4910e7)
+
+---
 
 ## v1.1.2 (2026-11-15)
 
