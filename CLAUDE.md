@@ -98,6 +98,9 @@ of Kysely, so they carry over - but re-check each one where Drizzle's expectatio
 
 Inherited from `../postgrejs` and `../postgrejs-kysely`; they apply here from the first commit.
 
+- **A handoff note between sessions goes to `.claude/local/handoff.md`** (git-ignored); a new
+  session reads it first. There is one note, and a new handoff replaces it.
+
 - **No fixups here. A gap in PostgreJS is reported, not worked around.** When something this
   adapter needs is missing, wrong or slower in `postgrejs`, do not patch around it in this package:
   no post-decode value rewriting, no shim, no vendored parser, no `pg`-compatibility table, no
