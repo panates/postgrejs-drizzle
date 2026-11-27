@@ -401,7 +401,7 @@ baseline moves with the PostgreSQL version.
 ### The three PostgreJS defects this turned up - all since fixed
 
 All three were in PostgreJS, not in the driver, and all three affect `postgrejs-kysely` too. They
-were written up as tasks in `../postgrejs/.claude/` and fixed the same day; what follows is what was
+were written up as tasks in `../postgrejs/.claude/local/` and fixed the same day; what follows is what was
 wrong and how the fix was verified, because the *shape* of each problem still decides how this driver
 is written.
 
